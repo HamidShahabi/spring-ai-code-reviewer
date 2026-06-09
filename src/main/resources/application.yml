@@ -1,0 +1,65 @@
+spring:
+  application:
+    name: ai-code-reviewer
+
+  # ── Database ──────────────────────────────────────────────────────────────
+  datasource:
+    url:      jdbc:postgresql://${DB_HOST:localhost}:5432/ai_reviewer
+    username: ${DB_USER:reviewer}
+    password: ${DB_PASS:reviewer}
+
+  jpa:
+    hibernate:
+      ddl-auto: update          # use Flyway/Liquibase in production
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+  # ── Spring AI — provider selection ────────────────────────────────────────
+  # Switch provider by activating a Spring profile (openai | anthropic | ollama).
+  # Default: OpenAI. See ARCHITECTURE.md §6 for profile definitions.
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:placeholder}
+      chat:
+        options:
+          model:       ${AI_MODEL:gpt-4o-mini}
+          temperature: 0.1
+
+# ── GitLab ───────────────────────────────────────────────────────────────────
+gitlab:
+  url:            ${GITLAB_URL:https://gitlab.example.com}
+  token:          ${GITLAB_TOKEN:placeholder}
+  webhook-secret: ${GITLAB_WEBHOOK_SECRET:placeholder}
+
+# ── Reviewer tuning ───────────────────────────────────────────────────────────
+reviewer:
+  min-severity:           ${MIN_SEVERITY:Low}
+  max-files-per-review:   30
+  request-timeout-seconds: 120
+  retry-max-attempts:     3
+  retry-backoff-seconds:  2
+  ignore-extensions:
+    - .lock
+    - go.sum
+    - go.mod
+    - .pb.go
+    - swagger.yaml
+    - .svg
+    - .png
+    - .md
+
+# ── Actuator / Observability ─────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}

@@ -1,0 +1,1 @@
+if you have encountered critical build errors and trapped in a recursive loop, just stop and ask me to come and help. just go on with writing codes even with failures in mvn
