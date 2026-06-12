@@ -18,11 +18,28 @@ spring:
         format_sql: true
 
   # ── Spring AI — provider selection ────────────────────────────────────────
-  # Switch provider by activating a Spring profile (openai | anthropic | ollama).
-  # Default: OpenAI. See ARCHITECTURE.md §6 for profile definitions.
+  # AI_PROVIDER picks the active chat model (anthropic | openai). Both starters are
+  # on the classpath; spring.ai.model.chat disables the inactive one so exactly one
+  # ChatModel bean is created. This is the "swap provider in config" story (ADR-001).
   ai:
+    model:
+      chat: ${AI_PROVIDER:anthropic}
+
+    # Anthropic (Claude) — native integration. Default demo provider.
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:placeholder}
+      chat:
+        model: ${AI_MODEL:claude-haiku-4-5}
+        options:
+          temperature: 0.1
+
+    # OpenAI-compatible: OpenAI, OpenRouter, or a local Ollama endpoint.
+    #   OpenAI      → https://api.openai.com      (model e.g. gpt-4o-mini)
+    #   OpenRouter  → https://openrouter.ai/api   (model e.g. google/gemini-2.0-flash-001)
+    #   Ollama      → http://localhost:11434      (model e.g. qwen2.5-coder, key any non-empty value)
     openai:
-      api-key: ${OPENAI_API_KEY:placeholder}
+      base-url: ${AI_BASE_URL:https://api.openai.com}
+      api-key:  ${OPENAI_API_KEY:placeholder}
       chat:
         options:
           model:       ${AI_MODEL:gpt-4o-mini}
