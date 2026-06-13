@@ -15,7 +15,7 @@
 services:
 
   postgres:
-    image: postgres:16
+    image: registry.docker.ir/postgres:16
     container_name: reviewer-postgres
     environment:
       POSTGRES_DB:       ai_reviewer
@@ -53,14 +53,20 @@ services:
   # IMPORTANT for webhooks to a host-run app, enable in Admin → Settings → Network →
   #   Outbound requests → "Allow requests to the local network from webhooks".
   gitlab:
-    image: gitlab/gitlab-ce:latest
+    image: registry.docker.ir/gitlab/gitlab-ce:latest
     container_name: reviewer-gitlab
     profiles: ["gitlab"]
     hostname: gitlab.local
     environment:
       GITLAB_OMNIBUS_CONFIG: |
         external_url 'http://localhost:8080'
+        puma['port'] = 8081
         gitlab_rails['gitlab_shell_ssh_port'] = 2222
+        # GitLab auto-sizes puma to ~CPU count; on a large-core / busy host that
+        # spawns too many workers and crash-loops (502s, never healthy). Pin it.
+        puma['worker_processes'] = 2
+        sidekiq['max_concurrency'] = 9
+        prometheus_monitoring['enable'] = false
     ports:
       - "8080:8080"
       - "2222:22"
