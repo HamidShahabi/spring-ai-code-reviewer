@@ -55,14 +55,11 @@ set -a; source .env; set +a
 mvn spring-boot:run
 ```
 
-The app listens on **http://localhost:8080**… which collides with GitLab. If GitLab is on 8080,
-run the app on another port:
+The app listens on **http://localhost:8082** by default (8080 is taken by the GitLab
+container). Override with `SERVER_PORT` in `.env` (or `-Dspring-boot.run.arguments=--server.port=<port>`)
+if 8082 is busy.
 
-```bash
-mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=9000
-```
-
-Health check: `curl http://localhost:9000/actuator/health` → `{"status":"UP"}`.
+Health check: `curl http://localhost:8082/actuator/health` → `{"status":"UP"}`.
 
 ---
 
@@ -70,7 +67,7 @@ Health check: `curl http://localhost:9000/actuator/health` → `{"status":"UP"}`
 
 *Project → Settings → Webhooks → Add new webhook*
 
-- **URL:** `http://host.docker.internal:9000/api/v1/webhook`
+- **URL:** `http://host.docker.internal:8082/api/v1/webhook`
   (from inside the GitLab container, `host.docker.internal` reaches the host-run app;
   on Linux this resolves via the compose `extra_hosts`/default gateway — if it fails, use the host's LAN IP.)
 - **Secret token:** `demo-secret` (must equal `GITLAB_WEBHOOK_SECRET`)
@@ -93,7 +90,7 @@ Health check: `curl http://localhost:9000/actuator/health` → `{"status":"UP"}`
 
 ## 6. Talking points / verification
 
-- **Metrics:** `curl http://localhost:9000/actuator/metrics/reviewer.mr.review.duration`
+- **Metrics:** `curl http://localhost:8082/actuator/metrics/reviewer.mr.review.duration`
   and `.../reviewer.comment.inline.success` vs `.../reviewer.comment.inline.fallback`.
 - **Persistence:** `docker exec -it reviewer-postgres psql -U reviewer -d ai_reviewer -c 'select project_id, mr_iid, model_used, findings_high, duration_ms from mr_reviews;'`
 - **Provider swap (privacy story):** stop the app, switch `.env` from provider block (a) Anthropic to
