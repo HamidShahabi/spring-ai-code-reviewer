@@ -92,7 +92,9 @@ Health check: `curl http://localhost:8082/actuator/health` → `{"status":"UP"}`
 
 - **Metrics:** `curl http://localhost:8082/actuator/metrics/reviewer.mr.review.duration`
   and `.../reviewer.comment.inline.success` vs `.../reviewer.comment.inline.fallback`.
-- **Persistence:** `docker exec -it reviewer-postgres psql -U reviewer -d ai_reviewer -c 'select project_id, mr_iid, model_used, findings_high, duration_ms from mr_reviews;'`
+- **Persistence — review summary:** `docker exec -it reviewer-postgres psql -U reviewer -d ai_reviewer -c 'select project_id, mr_iid, model_used, findings_high, duration_ms from mr_reviews;'`
+- **Persistence — per-finding audit trail:** every finding is stored, with whether it was posted inline or fell back to a general comment:
+  `docker exec -it reviewer-postgres psql -U reviewer -d ai_reviewer -c 'select file_path, line_number, severity, posted_inline from findings order by review_id;'`
 - **Provider swap (privacy story):** stop the app, switch `.env` from provider block (a) Anthropic to
   (b) a local Ollama (`AI_PROVIDER=openai`, `AI_BASE_URL=http://localhost:11434`), restart — no code
   change. Same `ChatClient` abstraction, different provider; with Ollama no code leaves the network.

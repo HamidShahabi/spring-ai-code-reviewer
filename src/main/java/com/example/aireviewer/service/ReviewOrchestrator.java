@@ -13,7 +13,10 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Coordinates the full review workflow for a single Merge Request event.
@@ -113,14 +116,15 @@ public class ReviewOrchestrator {
             // ── 5. Publish ───────────────────────────────────────────────
             commentPublisher.deleteStaleNotes(projectId, mrIid);
             commentPublisher.postSummary(projectId, mrIid, filtered, modelName);
-            commentPublisher.publishFindings(projectId, mrIid, filtered, ctx);
+            List<ReviewResponse.FindingDto> fellBack =
+                    commentPublisher.publishFindings(projectId, mrIid, filtered, ctx);
 
             // ── 5b. Tag the MR so reviewers can see it was AI-reviewed ────
             applyLabels(projectId, mrIid, filtered);
 
-            // ── 6. Persist session ───────────────────────────────────────
+            // ── 6. Persist session + per-finding audit trail ─────────────
             long durationMs = System.currentTimeMillis() - startMs;
-            reviewRepository.save(buildReviewEntity(ctx, chunks.size(), filtered, durationMs));
+            reviewRepository.save(buildReviewEntity(ctx, chunks.size(), filtered, fellBack, durationMs));
 
             meterRegistry.counter("reviewer.mr.processed.total").increment();
             meterRegistry.counter("reviewer.finding.total",
@@ -158,6 +162,7 @@ public class ReviewOrchestrator {
 
     private MrReview buildReviewEntity(MrContext ctx, int filesReviewed,
                                         List<ReviewResponse.FindingDto> findings,
+                                        List<ReviewResponse.FindingDto> fellBack,
                                         long durationMs) {
         MrReview review = new MrReview(ctx.projectId(), ctx.mrIid(), modelName);
         review.setFilesReviewed(filesReviewed);
@@ -170,6 +175,18 @@ public class ReviewOrchestrator {
                 .filter(f -> "Low".equalsIgnoreCase(f.severity())).count());
         review.setFindingsNitpick((int) findings.stream()
                 .filter(f -> "Nitpick".equalsIgnoreCase(f.severity())).count());
+
+        // Per-finding audit rows. A finding was posted inline unless it fell back to a
+        // general comment (identity match — fellBack holds the same DTO references).
+        Set<ReviewResponse.FindingDto> fallbackSet =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        fallbackSet.addAll(fellBack);
+        for (ReviewResponse.FindingDto f : findings) {
+            Finding finding = new Finding(
+                    review, f.file(), f.line(), Severity.fromString(f.severity()), f.comment());
+            finding.setPostedInline(!fallbackSet.contains(f));
+            review.addFinding(finding);
+        }
         return review;
     }
 }
