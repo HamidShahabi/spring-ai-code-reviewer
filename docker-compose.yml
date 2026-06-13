@@ -1,0 +1,87 @@
+# Local demo stack for the AI Code Reviewer.
+#
+#   Always-on:  postgres  (the app fails to start without it)
+#   Profiles:   --profile llm     → ollama   (local, no-cost LLM for an offline demo)
+#               --profile gitlab  → gitlab-ce (self-hosted GitLab; needs ~4GB+ RAM, slow first boot)
+#
+# Usage:
+#   docker compose up -d                          # just Postgres
+#   docker compose --profile llm up -d            # Postgres + Ollama
+#   docker compose --profile gitlab up -d         # Postgres + GitLab CE
+#   docker compose --profile llm --profile gitlab up -d   # everything
+#
+# The Spring app itself runs on the host (mvn spring-boot:run) — see DEMO.md.
+
+services:
+
+  postgres:
+    image: registry.docker.ir/postgres:16
+    container_name: reviewer-postgres
+    environment:
+      POSTGRES_DB:       ai_reviewer
+      POSTGRES_USER:     reviewer
+      POSTGRES_PASSWORD: reviewer
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reviewer -d ai_reviewer"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Optional local LLM (Ollama) — DISABLED for now ──────────────────────────
+  # The demo uses Anthropic (see .env.example). If you already run Ollama on the
+  # host, just point the app at it (AI_PROVIDER=openai, AI_BASE_URL=http://localhost:11434,
+  # AI_MODEL=qwen2.5-coder, OPENAI_API_KEY=ollama) — no container needed.
+  # To run Ollama here instead, uncomment this service and the `ollama` volume below,
+  # then: docker compose --profile llm up -d && docker exec -it reviewer-ollama ollama pull qwen2.5-coder
+  #
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: reviewer-ollama
+  #   profiles: ["llm"]
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama:/root/.ollama
+
+  # ── Optional self-hosted GitLab (profile: gitlab) ───────────────────────────
+  # First boot takes several minutes. Web UI: http://localhost:8080
+  # Initial root password:  docker exec -it reviewer-gitlab cat /etc/gitlab/initial_root_password
+  # IMPORTANT for webhooks to a host-run app, enable in Admin → Settings → Network →
+  #   Outbound requests → "Allow requests to the local network from webhooks".
+  gitlab:
+    image: registry.docker.ir/gitlab/gitlab-ce:latest
+    container_name: reviewer-gitlab
+    profiles: ["gitlab"]
+    hostname: gitlab.local
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://localhost:8080'
+        puma['port'] = 8081
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+        # GitLab auto-sizes puma to ~CPU count; on a large-core / busy host that
+        # spawns too many workers and crash-loops (502s, never healthy). Pin it.
+        puma['worker_processes'] = 2
+        sidekiq['max_concurrency'] = 9
+        prometheus_monitoring['enable'] = false
+    ports:
+      - "8080:8080"
+      - "2222:22"
+    # Lets the webhook reach a host-run app via http://host.docker.internal:<port> on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    shm_size: "256m"
+    volumes:
+      - gitlab-config:/etc/gitlab
+      - gitlab-logs:/var/log/gitlab
+      - gitlab-data:/var/opt/gitlab
+
+volumes:
+  pgdata:
+  # ollama:        # uncomment if you enable the ollama service above
+  gitlab-config:
+  gitlab-logs:
+  gitlab-data:

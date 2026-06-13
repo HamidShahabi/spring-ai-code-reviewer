@@ -45,7 +45,7 @@ public class DiffChunker {
 
     // ─── Package-private for unit tests ──────────────────────────────────────
 
-    List<Integer> parseValidLines(String diffText) {
+    public List<Integer> parseValidLines(String diffText) {
         List<Integer> lines = new ArrayList<>();
         for (String line : diffText.split("\n")) {
             Matcher m = HUNK_HEADER.matcher(line);

@@ -8,6 +8,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -39,6 +40,9 @@ public class ReviewOrchestrator {
     private final ReviewRepository reviewRepository;
     private final MeterRegistry    meterRegistry;
 
+    /** Active LLM model name, resolved from Spring AI config for auditability and the summary comment. */
+    private final String modelName;
+
     public ReviewOrchestrator(
             GitLabApiClient gitLabApiClient,
             DiffChunker diffChunker,
@@ -46,7 +50,10 @@ public class ReviewOrchestrator {
             RulesEngine rulesEngine,
             CommentPublisher commentPublisher,
             ReviewRepository reviewRepository,
-            MeterRegistry meterRegistry) {
+            MeterRegistry meterRegistry,
+            @Value("${spring.ai.model.chat:openai}") String provider,
+            @Value("${spring.ai.anthropic.chat.model:unknown}") String anthropicModel,
+            @Value("${spring.ai.openai.chat.options.model:unknown}") String openAiModel) {
         this.gitLabApiClient  = gitLabApiClient;
         this.diffChunker      = diffChunker;
         this.llmReviewService = llmReviewService;
@@ -54,6 +61,7 @@ public class ReviewOrchestrator {
         this.commentPublisher = commentPublisher;
         this.reviewRepository = reviewRepository;
         this.meterRegistry    = meterRegistry;
+        this.modelName        = "anthropic".equalsIgnoreCase(provider) ? anthropicModel : openAiModel;
     }
 
     @Async("reviewTaskExecutor")
@@ -104,8 +112,11 @@ public class ReviewOrchestrator {
 
             // ── 5. Publish ───────────────────────────────────────────────
             commentPublisher.deleteStaleNotes(projectId, mrIid);
-            commentPublisher.postSummary(projectId, mrIid, filtered, resolveModelName());
+            commentPublisher.postSummary(projectId, mrIid, filtered, modelName);
             commentPublisher.publishFindings(projectId, mrIid, filtered, ctx);
+
+            // ── 5b. Tag the MR so reviewers can see it was AI-reviewed ────
+            applyLabels(projectId, mrIid, filtered);
 
             // ── 6. Persist session ───────────────────────────────────────
             long durationMs = System.currentTimeMillis() - startMs;
@@ -128,18 +139,27 @@ public class ReviewOrchestrator {
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
     /**
-     * Model name is stored in the review entity for auditability.
-     * Resolved from the active Spring AI auto-configuration at runtime.
-     * TODO: inject the model name from Spring AI ChatOptions when wiring configurations.
+     * Adds the {@code ai-reviewed} label to every reviewed MR, plus {@code ai-high-severity}
+     * when any High finding was posted (FR-040/041). Label failures never fail the review.
      */
-    private String resolveModelName() {
-        return "configured-model";
+    private void applyLabels(long projectId, long mrIid,
+                             List<ReviewResponse.FindingDto> findings) {
+        try {
+            gitLabApiClient.addLabel(projectId, mrIid, "ai-reviewed");
+            boolean hasHigh = findings.stream()
+                    .anyMatch(f -> "High".equalsIgnoreCase(f.severity()));
+            if (hasHigh) {
+                gitLabApiClient.addLabel(projectId, mrIid, "ai-high-severity");
+            }
+        } catch (Exception e) {
+            log.warn("Failed to apply labels to MR {}: {}", mrIid, e.getMessage());
+        }
     }
 
     private MrReview buildReviewEntity(MrContext ctx, int filesReviewed,
                                         List<ReviewResponse.FindingDto> findings,
                                         long durationMs) {
-        MrReview review = new MrReview(ctx.projectId(), ctx.mrIid(), resolveModelName());
+        MrReview review = new MrReview(ctx.projectId(), ctx.mrIid(), modelName);
         review.setFilesReviewed(filesReviewed);
         review.setDurationMs(durationMs);
         review.setFindingsHigh((int) findings.stream()
