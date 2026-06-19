@@ -77,6 +77,12 @@ public class MrReview {
     public long getDurationMs()       { return durationMs; }
     public List<Finding> getFindings(){ return findings; }
 
+    /**
+     * Attaches a finding to this review. Cascade persists it with the parent.
+     * The {@link Finding} constructor already sets the back-reference to this review.
+     */
+    public void addFinding(Finding finding) { this.findings.add(finding); }
+
     // ─── Setters ────────────────────────────────────────────────────────────
 
     public void setFilesReviewed(int filesReviewed)       { this.filesReviewed = filesReviewed; }
