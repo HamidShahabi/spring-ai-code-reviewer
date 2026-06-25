@@ -39,9 +39,15 @@ AI_API_KEY = os.getenv("ANTHROPIC_API_KEY") or os.getenv("AI_API_KEY")
 AI_MODEL = os.getenv("AI_MODEL", "claude-haiku-4-5")  # fast + cheap; claude-sonnet-4-6 for higher quality
 AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "8000"))
 
-# SSL: path to a CA bundle, or True to use system certs. Never False in production.
-_ca = os.getenv("REQUESTS_CA_BUNDLE")
-CA_BUNDLE = _ca if _ca else True
+# SSL: a path to a CA bundle, or the literal "true"/"false" to toggle system-cert
+# verification. Never disable verification in production. Defaults to system certs.
+_ca = (os.getenv("REQUESTS_CA_BUNDLE") or "").strip()
+if _ca.lower() in ("", "true", "1", "yes"):
+    CA_BUNDLE: object = True
+elif _ca.lower() in ("false", "0", "no"):
+    CA_BUNDLE = False
+else:
+    CA_BUNDLE = _ca  # treat as a filesystem path to a CA bundle
 
 # Only post findings at or above this severity.
 MIN_SEVERITY = os.getenv("MIN_SEVERITY", "Low")
@@ -111,9 +117,11 @@ def get_mr_diff() -> str:
     diff_text = ""
     for c in changes:
         new_path = c.get("new_path", "")
-        if c.get("deleted_file") or any(new_path.endswith(ext) for ext in IGNORE_EXTENSIONS):
+        diff_content = c.get("diff")
+        # Skip deletions, binary/empty diffs, and ignored file types.
+        if c.get("deleted_file") or not diff_content or any(new_path.endswith(ext) for ext in IGNORE_EXTENSIONS):
             continue
-        diff_text += f"\n### File: {new_path}\n```diff\n{c.get('diff')}\n```\n"
+        diff_text += f"\n### File: {new_path}\n```diff\n{diff_content}\n```\n"
     return diff_text
 
 
@@ -130,41 +138,71 @@ def get_mr_shas() -> Optional[Dict]:
     if not versions:
         return None
     latest = versions[0]
-    return {
+    shas = {
         "base_sha": latest.get("base_commit_sha"),
         "start_sha": latest.get("start_commit_sha"),
         "head_sha": latest.get("head_commit_sha"),
     }
+    # A version row can exist with null SHAs; sending those to GitLab produces
+    # bogus inline failures, so treat any missing SHA as "no inline support".
+    if not all(shas.values()):
+        logger.warning("MR version is missing commit SHAs; inline comments disabled.")
+        return None
+    return shas
 
 
 def post_simple_comment(text: str) -> None:
-    requests.post(f"{_mr_base()}/notes", headers=get_headers(), data={"body": text},
-                  verify=CA_BUNDLE, timeout=REQUEST_TIMEOUT)
+    try:
+        res = requests.post(f"{_mr_base()}/notes", headers=get_headers(), data={"body": text},
+                            verify=CA_BUNDLE, timeout=REQUEST_TIMEOUT)
+        if res.status_code not in (200, 201):
+            logger.warning("⚠️  Failed to post comment (%s): %s", res.status_code, res.text[:200])
+    except requests.RequestException as exc:
+        logger.error("❌ Failed to post comment: %s", exc)
 
 
 def add_label_to_mr(label_name: str) -> None:
-    requests.put(_mr_base(), headers=get_headers(), data={"add_labels": label_name},
-                 verify=CA_BUNDLE, timeout=REQUEST_TIMEOUT)
+    try:
+        res = requests.put(_mr_base(), headers=get_headers(), data={"add_labels": label_name},
+                           verify=CA_BUNDLE, timeout=REQUEST_TIMEOUT)
+        if res.status_code != 200:
+            logger.warning("⚠️  Failed to add label '%s' to MR (%s)", label_name, res.status_code)
+    except requests.RequestException as exc:
+        logger.warning("⚠️  Failed to add label '%s' to MR: %s", label_name, exc)
 
 
 def delete_existing_ai_reviews() -> None:
     """Remove previous AI review notes so pipeline re-runs don't duplicate comments."""
     notes_url = f"{_mr_base()}/notes"
-    try:
-        res = requests.get(notes_url, headers=get_headers(), params={"per_page": 100},
-                           verify=CA_BUNDLE, timeout=REQUEST_TIMEOUT)
-        res.raise_for_status()
-    except requests.RequestException as exc:
-        logger.warning("Could not list existing notes for cleanup: %s", exc)
-        return
+    page = 1
+    while True:
+        try:
+            res = requests.get(notes_url, headers=get_headers(),
+                               params={"per_page": 100, "page": page},
+                               verify=CA_BUNDLE, timeout=REQUEST_TIMEOUT)
+            res.raise_for_status()
+        except requests.RequestException as exc:
+            logger.warning("Could not list existing notes for cleanup: %s", exc)
+            return
 
-    for note in res.json():
-        body = note.get("body", "")
-        if AI_MARKER in body or "AI Review [" in body:
-            del_res = requests.delete(f"{notes_url}/{note['id']}", headers=get_headers(),
-                                      verify=CA_BUNDLE, timeout=REQUEST_TIMEOUT)
-            if del_res.status_code == 204:
-                logger.info("🗑️  Removed stale AI note %s", note["id"])
+        for note in res.json():
+            body = note.get("body", "")
+            if AI_MARKER in body or "AI Review [" in body:
+                try:
+                    del_res = requests.delete(f"{notes_url}/{note['id']}", headers=get_headers(),
+                                              verify=CA_BUNDLE, timeout=REQUEST_TIMEOUT)
+                    if del_res.status_code == 204:
+                        logger.info("🗑️  Removed stale AI note %s", note["id"])
+                    else:
+                        logger.warning("⚠️  Failed to delete note %s: %s", note["id"], del_res.status_code)
+                except requests.RequestException as exc:
+                    logger.warning("⚠️  Failed to delete note %s: %s", note["id"], exc)
+
+        # GitLab paginates notes; walk every page so large MRs are fully cleaned.
+        next_page = res.headers.get("X-Next-Page")
+        if not next_page:
+            break
+        page = int(next_page)
 
 
 # ==========================================
@@ -211,6 +249,27 @@ def split_diff_by_file(diff_text: str) -> Dict[str, str]:
         chunks[current_file] = "\n".join(current_lines)
 
     return chunks
+
+
+def format_line_ranges(valid_lines: List[int]) -> str:
+    """Compress valid line numbers into compact ranges (e.g. '12-18, 40, 55-60').
+
+    `valid_lines` can be disjoint across hunks; a single min–max range would
+    invite the model to pick a line in the gap that GitLab then rejects.
+    """
+    if not valid_lines:
+        return ""
+    lines = sorted(set(valid_lines))
+    ranges: List[tuple] = []
+    start = prev = lines[0]
+    for n in lines[1:]:
+        if n == prev + 1:
+            prev = n
+            continue
+        ranges.append((start, prev))
+        start = prev = n
+    ranges.append((start, prev))
+    return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in ranges)
 
 
 def snap_to_valid_line(line: int, valid_lines: List[int]) -> Optional[int]:
@@ -310,7 +369,7 @@ def review_file(mr_title: str, mr_desc: str, file_path: str, file_diff: str,
         logger.info("  Skipping %s — no reviewable hunks.", file_path)
         return []
 
-    line_hint = f"  - {file_path}: lines {min(valid_lines)}–{max(valid_lines)}"
+    line_hint = f"  - {file_path}: lines {format_line_ranges(valid_lines)}"
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(line_hint=line_hint)
     user_prompt = f"MR Title: {mr_title}\nMR Description: {mr_desc}\n\nCode Changes:\n{file_diff}"
 
@@ -325,7 +384,12 @@ def review_file(mr_title: str, mr_desc: str, file_path: str, file_diff: str,
             logger.error("Review failed for %s: %s", file_path, exc2)
             return []
 
-    return parsed.get("reviews", [])
+    # The no-schema fallback can return a bare JSON array instead of {"reviews": [...]}.
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        return parsed.get("reviews", [])
+    return []
 
 
 def review_all_files(mr_title: str, mr_desc: str, diff_text: str,
@@ -417,14 +481,18 @@ def post_inline_comments_with_fallback(reviews: List[Dict], shas: Optional[Dict]
                     "new_line": target_line,
                 },
             }
-            res = requests.post(f"{_mr_base()}/discussions", headers=get_headers(),
-                                json=payload, verify=CA_BUNDLE, timeout=REQUEST_TIMEOUT)
-            if res.status_code == 201:
-                posted_inline = True
-                logger.info("✅ Inline comment on %s:%s", file_path, target_line)
-            else:
+            try:
+                res = requests.post(f"{_mr_base()}/discussions", headers=get_headers(),
+                                    json=payload, verify=CA_BUNDLE, timeout=REQUEST_TIMEOUT)
+                if res.status_code == 201:
+                    posted_inline = True
+                    logger.info("✅ Inline comment on %s:%s", file_path, target_line)
+                else:
+                    logger.warning("⚠️  Inline failed on %s:%s (%s). Falling back.",
+                                   file_path, target_line, res.status_code)
+            except requests.RequestException as exc:
                 logger.warning("⚠️  Inline failed on %s:%s (%s). Falling back.",
-                               file_path, target_line, res.status_code)
+                               file_path, target_line, exc)
 
         if not posted_inline:
             general_comments.append(issue)
