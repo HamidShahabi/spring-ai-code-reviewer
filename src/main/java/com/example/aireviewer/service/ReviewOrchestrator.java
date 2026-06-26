@@ -1,9 +1,11 @@
 package com.example.aireviewer.service;
 
+import com.example.aireviewer.config.ReviewerProperties;
 import com.example.aireviewer.domain.*;
 import com.example.aireviewer.infrastructure.CommentPublisher;
 import com.example.aireviewer.infrastructure.GitLabApiClient;
 import com.example.aireviewer.repository.ReviewRepository;
+import com.example.aireviewer.tools.RepoContextTools;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
@@ -42,6 +44,7 @@ public class ReviewOrchestrator {
     private final CommentPublisher commentPublisher;
     private final ReviewRepository reviewRepository;
     private final MeterRegistry    meterRegistry;
+    private final ReviewerProperties reviewerProperties;
 
     /** Active LLM model name, resolved from Spring AI config for auditability and the summary comment. */
     private final String modelName;
@@ -54,6 +57,7 @@ public class ReviewOrchestrator {
             CommentPublisher commentPublisher,
             ReviewRepository reviewRepository,
             MeterRegistry meterRegistry,
+            ReviewerProperties reviewerProperties,
             @Value("${spring.ai.model.chat:openai}") String provider,
             @Value("${spring.ai.anthropic.chat.model:unknown}") String anthropicModel,
             @Value("${spring.ai.openai.chat.options.model:unknown}") String openAiModel) {
@@ -64,6 +68,7 @@ public class ReviewOrchestrator {
         this.commentPublisher = commentPublisher;
         this.reviewRepository = reviewRepository;
         this.meterRegistry    = meterRegistry;
+        this.reviewerProperties = reviewerProperties;
         this.modelName        = "anthropic".equalsIgnoreCase(provider) ? anthropicModel : openAiModel;
     }
 
@@ -101,10 +106,21 @@ public class ReviewOrchestrator {
             }
 
             // ── 3. Review each file independently ────────────────────────
+            // When context tools are enabled, a single SHA-pinned, budgeted tool instance is
+            // shared across all files of this MR (one budget per MR). Null = diff-only baseline.
+            ReviewerProperties.ContextTools toolCfg = reviewerProperties.getContextTools();
+            RepoContextTools tools = toolCfg.isEnabled()
+                    ? new RepoContextTools(gitLabApiClient, ctx, toolCfg.getCallBudget(), toolCfg.getMaxFileLines())
+                    : null;
+            if (tools != null) {
+                log.info("Context tools enabled — budget={} maxFileLines={}",
+                        toolCfg.getCallBudget(), toolCfg.getMaxFileLines());
+            }
+
             List<ReviewResponse.FindingDto> allFindings = new ArrayList<>();
             for (FileChunk chunk : chunks) {
                 try {
-                    allFindings.addAll(llmReviewService.review(chunk, ctx));
+                    allFindings.addAll(llmReviewService.review(chunk, ctx, tools));
                 } catch (Exception e) {
                     log.warn("Skipping file {} after LLM failure: {}", chunk.filePath(), e.getMessage());
                 }

@@ -63,6 +63,12 @@ reviewer:
   request-timeout-seconds: 120
   retry-max-attempts:     3
   retry-backoff-seconds:  2
+  # Let the LLM pull repo context on demand (full files, symbol lookups) at the exact
+  # reviewed SHA — no pre-indexing. Disabled by default (diff-only baseline).
+  context-tools:
+    enabled:        ${CONTEXT_TOOLS_ENABLED:false}
+    call-budget:    ${CONTEXT_TOOLS_BUDGET:6}
+    max-file-lines: ${CONTEXT_TOOLS_MAX_LINES:400}
   ignore-extensions:
     - .lock
     - go.sum

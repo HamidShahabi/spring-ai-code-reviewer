@@ -32,6 +32,9 @@ public class ReviewerProperties {
             "swagger.yaml", ".svg", ".png", ".md"
     );
 
+    /** Tool-calling context settings (bound under {@code reviewer.context-tools}). */
+    private ContextTools contextTools = new ContextTools();
+
     // ─── Getters ────────────────────────────────────────────────────────────
 
     public String getMinSeverity()                       { return minSeverity; }
@@ -40,6 +43,7 @@ public class ReviewerProperties {
     public int getRetryMaxAttempts()                     { return retryMaxAttempts; }
     public long getRetryBackoffSeconds()                 { return retryBackoffSeconds; }
     public List<String> getIgnoreExtensions()            { return ignoreExtensions; }
+    public ContextTools getContextTools()                { return contextTools; }
 
     // ─── Setters ────────────────────────────────────────────────────────────
 
@@ -49,4 +53,29 @@ public class ReviewerProperties {
     public void setRetryMaxAttempts(int retryMaxAttempts)            { this.retryMaxAttempts = retryMaxAttempts; }
     public void setRetryBackoffSeconds(long retryBackoffSeconds)     { this.retryBackoffSeconds = retryBackoffSeconds; }
     public void setIgnoreExtensions(List<String> ignoreExtensions)   { this.ignoreExtensions = ignoreExtensions; }
+    public void setContextTools(ContextTools contextTools)           { this.contextTools = contextTools; }
+
+    /**
+     * Lets the LLM pull extra repo context on demand (full files, symbol lookups) at the
+     * exact revision under review, instead of pre-indexing. Disabled by default.
+     */
+    public static class ContextTools {
+
+        /** Master switch — when false, reviews run diff-only (the baseline behavior). */
+        private boolean enabled = false;
+
+        /** Max number of tool calls per MR (shared across all files). Bounds tokens/latency. */
+        private int callBudget = 6;
+
+        /** A fetched file is truncated to this many lines before being sent to the model. */
+        private int maxFileLines = 400;
+
+        public boolean isEnabled()                       { return enabled; }
+        public int getCallBudget()                       { return callBudget; }
+        public int getMaxFileLines()                     { return maxFileLines; }
+
+        public void setEnabled(boolean enabled)          { this.enabled = enabled; }
+        public void setCallBudget(int callBudget)        { this.callBudget = callBudget; }
+        public void setMaxFileLines(int maxFileLines)    { this.maxFileLines = maxFileLines; }
+    }
 }
