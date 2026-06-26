@@ -118,9 +118,12 @@ public class ReviewOrchestrator {
             }
 
             List<ReviewResponse.FindingDto> allFindings = new ArrayList<>();
+            LlmUsage totalUsage = LlmUsage.ZERO;
             for (FileChunk chunk : chunks) {
                 try {
-                    allFindings.addAll(llmReviewService.review(chunk, ctx, tools));
+                    FileReviewResult result = llmReviewService.review(chunk, ctx, tools);
+                    allFindings.addAll(result.findings());
+                    totalUsage = totalUsage.add(result.usage());
                 } catch (Exception e) {
                     log.warn("Skipping file {} after LLM failure: {}", chunk.filePath(), e.getMessage());
                 }
@@ -140,13 +143,17 @@ public class ReviewOrchestrator {
 
             // ── 6. Persist session + per-finding audit trail ─────────────
             long durationMs = System.currentTimeMillis() - startMs;
-            reviewRepository.save(buildReviewEntity(ctx, chunks.size(), filtered, fellBack, durationMs));
+            reviewRepository.save(buildReviewEntity(ctx, chunks.size(), filtered, fellBack, durationMs, totalUsage));
 
             meterRegistry.counter("reviewer.mr.processed.total").increment();
             meterRegistry.counter("reviewer.finding.total",
                     "severity", "total").increment(filtered.size());
-            log.info("Review complete — mrIid={} findings={} duration={}ms",
-                    mrIid, filtered.size(), durationMs);
+            meterRegistry.counter("reviewer.llm.tokens.total", "type", "prompt").increment(totalUsage.promptTokens());
+            meterRegistry.counter("reviewer.llm.tokens.total", "type", "completion").increment(totalUsage.completionTokens());
+            log.info("Review complete — mrIid={} findings={} tokens(p/c/t)={}/{}/{} duration={}ms",
+                    mrIid, filtered.size(),
+                    totalUsage.promptTokens(), totalUsage.completionTokens(), totalUsage.totalTokens(),
+                    durationMs);
 
         } catch (Exception e) {
             log.error("Review failed — project={} mrIid={}: {}",
@@ -179,10 +186,13 @@ public class ReviewOrchestrator {
     private MrReview buildReviewEntity(MrContext ctx, int filesReviewed,
                                         List<ReviewResponse.FindingDto> findings,
                                         List<ReviewResponse.FindingDto> fellBack,
-                                        long durationMs) {
+                                        long durationMs, LlmUsage usage) {
         MrReview review = new MrReview(ctx.projectId(), ctx.mrIid(), modelName);
         review.setFilesReviewed(filesReviewed);
         review.setDurationMs(durationMs);
+        review.setPromptTokens(usage.promptTokens());
+        review.setCompletionTokens(usage.completionTokens());
+        review.setTotalTokens(usage.totalTokens());
         review.setFindingsHigh((int) findings.stream()
                 .filter(f -> "High".equalsIgnoreCase(f.severity())).count());
         review.setFindingsMedium((int) findings.stream()

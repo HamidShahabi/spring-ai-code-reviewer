@@ -1,6 +1,8 @@
 package com.example.aireviewer.service;
 
 import com.example.aireviewer.domain.FileChunk;
+import com.example.aireviewer.domain.FileReviewResult;
+import com.example.aireviewer.domain.LlmUsage;
 import com.example.aireviewer.domain.MrContext;
 import com.example.aireviewer.domain.ReviewResponse;
 import com.example.aireviewer.tools.RepoContextTools;
@@ -10,6 +12,9 @@ import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ResponseEntity;
+import org.springframework.ai.chat.metadata.Usage;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
@@ -117,7 +122,7 @@ public class LlmReviewService {
             maxAttempts = 3,
             backoff   = @Backoff(delay = 2000, multiplier = 2)
     )
-    public List<ReviewResponse.FindingDto> review(FileChunk chunk, MrContext mrContext, RepoContextTools tools) {
+    public FileReviewResult review(FileChunk chunk, MrContext mrContext, RepoContextTools tools) {
         Timer.Sample sample = Timer.start(meterRegistry);
         try {
             String systemPrompt = SYSTEM_PROMPT.formatted(chunk.validLines())
@@ -134,20 +139,24 @@ public class LlmReviewService {
                     .user(userPrompt);
 
             ReviewResponse response;
+            ChatResponse  chatResponse;   // carries usage metadata in both paths
             if (tools != null) {
                 // With tool calling, the model frequently wraps its final answer in prose or a
                 // ```json fence, which BeanOutputConverter (.entity) rejects. Take the raw content
                 // and extract the JSON ourselves — the prompt already pins the exact shape.
-                String raw = spec.tools(tools).call().content();   // model may pull repo context at the reviewed SHA
-                response = parseLenient(raw);
+                chatResponse = spec.tools(tools).call().chatResponse();   // may pull repo context at the reviewed SHA
+                response = parseLenient(chatResponse.getResult().getOutput().getText());
             } else {
-                response = spec.call().entity(ReviewResponse.class);
+                // responseEntity gives us the parsed entity AND the ChatResponse (for token usage).
+                ResponseEntity<ChatResponse, ReviewResponse> re =
+                        spec.call().responseEntity(ReviewResponse.class);
+                response     = re.entity();
+                chatResponse = re.response();
             }
 
-            if (response == null || response.reviews() == null) {
-                return List.of();
-            }
-            return response.reviews();
+            List<ReviewResponse.FindingDto> findings =
+                    (response == null || response.reviews() == null) ? List.of() : response.reviews();
+            return new FileReviewResult(findings, extractUsage(chatResponse));
 
         } catch (Exception e) {
             log.warn("LLM call failed for file {}: {}", chunk.filePath(), e.getMessage());
@@ -155,6 +164,19 @@ public class LlmReviewService {
         } finally {
             sample.stop(meterRegistry.timer("reviewer.llm.request.duration"));
         }
+    }
+
+    /** Null-safe conversion of Spring AI's provider-agnostic {@link Usage} into {@link LlmUsage}. */
+    private LlmUsage extractUsage(ChatResponse chatResponse) {
+        if (chatResponse == null || chatResponse.getMetadata() == null
+                || chatResponse.getMetadata().getUsage() == null) {
+            return LlmUsage.ZERO;
+        }
+        Usage u = chatResponse.getMetadata().getUsage();
+        int prompt     = u.getPromptTokens()     != null ? u.getPromptTokens()     : 0;
+        int completion = u.getCompletionTokens() != null ? u.getCompletionTokens() : 0;
+        Integer total  = u.getTotalTokens();
+        return new LlmUsage(prompt, completion, total != null ? total : prompt + completion);
     }
 
     /**
