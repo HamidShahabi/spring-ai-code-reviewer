@@ -5,7 +5,7 @@ import com.example.aireviewer.domain.FileReviewResult;
 import com.example.aireviewer.domain.LlmUsage;
 import com.example.aireviewer.domain.MrContext;
 import com.example.aireviewer.domain.ReviewResponse;
-import com.example.aireviewer.tools.RepoContextTools;
+import com.example.aireviewer.service.context.ContextStrategy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -122,9 +122,12 @@ public class LlmReviewService {
             maxAttempts = 3,
             backoff   = @Backoff(delay = 2000, multiplier = 2)
     )
-    public FileReviewResult review(FileChunk chunk, MrContext mrContext, RepoContextTools tools) {
+    public FileReviewResult review(FileChunk chunk, MrContext mrContext, ContextStrategy strategy) {
         Timer.Sample sample = Timer.start(meterRegistry);
         try {
+            String injectedContext = strategy.injectedContextFor(chunk);
+            Object tools           = strategy.tools();
+
             String systemPrompt = SYSTEM_PROMPT.formatted(chunk.validLines())
                     + (tools != null ? TOOLS_HINT : "");
             String userPrompt   = USER_PROMPT.formatted(
@@ -132,7 +135,7 @@ public class LlmReviewService {
                     mrContext.description() != null ? mrContext.description() : "",
                     chunk.filePath(),
                     chunk.diffText()
-            );
+            ) + (injectedContext.isBlank() ? "" : "\n\n" + injectedContext);
 
             ChatClient.ChatClientRequestSpec spec = chatClient.prompt()
                     .system(systemPrompt)

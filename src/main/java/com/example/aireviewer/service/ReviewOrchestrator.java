@@ -1,11 +1,11 @@
 package com.example.aireviewer.service;
 
-import com.example.aireviewer.config.ReviewerProperties;
 import com.example.aireviewer.domain.*;
 import com.example.aireviewer.infrastructure.CommentPublisher;
 import com.example.aireviewer.infrastructure.GitLabApiClient;
 import com.example.aireviewer.repository.ReviewRepository;
-import com.example.aireviewer.tools.RepoContextTools;
+import com.example.aireviewer.service.context.ContextStrategy;
+import com.example.aireviewer.service.context.ContextStrategyFactory;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
@@ -44,7 +44,7 @@ public class ReviewOrchestrator {
     private final CommentPublisher commentPublisher;
     private final ReviewRepository reviewRepository;
     private final MeterRegistry    meterRegistry;
-    private final ReviewerProperties reviewerProperties;
+    private final ContextStrategyFactory contextStrategyFactory;
 
     /** Active LLM model name, resolved from Spring AI config for auditability and the summary comment. */
     private final String modelName;
@@ -57,7 +57,7 @@ public class ReviewOrchestrator {
             CommentPublisher commentPublisher,
             ReviewRepository reviewRepository,
             MeterRegistry meterRegistry,
-            ReviewerProperties reviewerProperties,
+            ContextStrategyFactory contextStrategyFactory,
             @Value("${spring.ai.model.chat:openai}") String provider,
             @Value("${spring.ai.anthropic.chat.model:unknown}") String anthropicModel,
             @Value("${spring.ai.openai.chat.options.model:unknown}") String openAiModel) {
@@ -68,7 +68,7 @@ public class ReviewOrchestrator {
         this.commentPublisher = commentPublisher;
         this.reviewRepository = reviewRepository;
         this.meterRegistry    = meterRegistry;
-        this.reviewerProperties = reviewerProperties;
+        this.contextStrategyFactory = contextStrategyFactory;
         this.modelName        = "anthropic".equalsIgnoreCase(provider) ? anthropicModel : openAiModel;
     }
 
@@ -106,22 +106,16 @@ public class ReviewOrchestrator {
             }
 
             // ── 3. Review each file independently ────────────────────────
-            // When context tools are enabled, a single SHA-pinned, budgeted tool instance is
-            // shared across all files of this MR (one budget per MR). Null = diff-only baseline.
-            ReviewerProperties.ContextTools toolCfg = reviewerProperties.getContextTools();
-            RepoContextTools tools = toolCfg.isEnabled()
-                    ? new RepoContextTools(gitLabApiClient, ctx, toolCfg.getCallBudget(), toolCfg.getMaxFileLines())
-                    : null;
-            if (tools != null) {
-                log.info("Context tools enabled — budget={} maxFileLines={}",
-                        toolCfg.getCallBudget(), toolCfg.getMaxFileLines());
-            }
+            // One context strategy per MR (config-selected: none | injected | agentic). It may
+            // hold per-MR state (fetch cache, shared tool budget), so it's shared across files.
+            ContextStrategy strategy = contextStrategyFactory.create(ctx);
+            log.info("Context strategy = {}", strategy.name());
 
             List<ReviewResponse.FindingDto> allFindings = new ArrayList<>();
             LlmUsage totalUsage = LlmUsage.ZERO;
             for (FileChunk chunk : chunks) {
                 try {
-                    FileReviewResult result = llmReviewService.review(chunk, ctx, tools);
+                    FileReviewResult result = llmReviewService.review(chunk, ctx, strategy);
                     allFindings.addAll(result.findings());
                     totalUsage = totalUsage.add(result.usage());
                 } catch (Exception e) {

@@ -32,8 +32,8 @@ public class ReviewerProperties {
             "swagger.yaml", ".svg", ".png", ".md"
     );
 
-    /** Tool-calling context settings (bound under {@code reviewer.context-tools}). */
-    private ContextTools contextTools = new ContextTools();
+    /** Context-augmentation settings (bound under {@code reviewer.context}). */
+    private Context context = new Context();
 
     // ─── Getters ────────────────────────────────────────────────────────────
 
@@ -43,7 +43,7 @@ public class ReviewerProperties {
     public int getRetryMaxAttempts()                     { return retryMaxAttempts; }
     public long getRetryBackoffSeconds()                 { return retryBackoffSeconds; }
     public List<String> getIgnoreExtensions()            { return ignoreExtensions; }
-    public ContextTools getContextTools()                { return contextTools; }
+    public Context getContext()                          { return context; }
 
     // ─── Setters ────────────────────────────────────────────────────────────
 
@@ -53,29 +53,36 @@ public class ReviewerProperties {
     public void setRetryMaxAttempts(int retryMaxAttempts)            { this.retryMaxAttempts = retryMaxAttempts; }
     public void setRetryBackoffSeconds(long retryBackoffSeconds)     { this.retryBackoffSeconds = retryBackoffSeconds; }
     public void setIgnoreExtensions(List<String> ignoreExtensions)   { this.ignoreExtensions = ignoreExtensions; }
-    public void setContextTools(ContextTools contextTools)           { this.contextTools = contextTools; }
+    public void setContext(Context context)                         { this.context = context; }
 
     /**
-     * Lets the LLM pull extra repo context on demand (full files, symbol lookups) at the
-     * exact revision under review, instead of pre-indexing. Disabled by default.
+     * How much repo context to give the model, at the exact revision under review (no
+     * pre-indexing). A config-selected strategy, in the spirit of provider selection (ADR-001):
+     * <ul>
+     *   <li>{@code none}     — diff only (cheapest; the original baseline).</li>
+     *   <li>{@code injected} — also inject the full changed file, fetched at the head SHA
+     *       (deterministic floor; works on any model). <b>Recommended default.</b></li>
+     *   <li>{@code agentic}  — expose tools so the model pulls context on demand
+     *       (higher ceiling; needs a tool-capable model). <b>Experimental.</b></li>
+     * </ul>
      */
-    public static class ContextTools {
+    public static class Context {
 
-        /** Master switch — when false, reviews run diff-only (the baseline behavior). */
-        private boolean enabled = false;
+        /** Active strategy: {@code none} | {@code injected} | {@code agentic}. */
+        private String strategy = "none";
 
-        /** Max number of tool calls per MR (shared across all files). Bounds tokens/latency. */
-        private int callBudget = 6;
-
-        /** A fetched file is truncated to this many lines before being sent to the model. */
+        /** A fetched file is truncated to this many lines (applies to injected and agentic). */
         private int maxFileLines = 400;
 
-        public boolean isEnabled()                       { return enabled; }
-        public int getCallBudget()                       { return callBudget; }
-        public int getMaxFileLines()                     { return maxFileLines; }
+        /** Agentic only: max tool calls per MR (shared across files). Bounds tokens/latency. */
+        private int agenticCallBudget = 6;
 
-        public void setEnabled(boolean enabled)          { this.enabled = enabled; }
-        public void setCallBudget(int callBudget)        { this.callBudget = callBudget; }
+        public String getStrategy()                      { return strategy; }
+        public int getMaxFileLines()                     { return maxFileLines; }
+        public int getAgenticCallBudget()                { return agenticCallBudget; }
+
+        public void setStrategy(String strategy)         { this.strategy = strategy; }
         public void setMaxFileLines(int maxFileLines)    { this.maxFileLines = maxFileLines; }
+        public void setAgenticCallBudget(int budget)     { this.agenticCallBudget = budget; }
     }
 }

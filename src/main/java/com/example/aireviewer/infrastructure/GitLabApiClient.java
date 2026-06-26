@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
+import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -130,10 +131,16 @@ public class GitLabApiClient {
      */
     @Retryable(retryFor = Exception.class, maxAttempts = 2, backoff = @Backoff(delay = 1000))
     public String fetchFileAtRef(long projectId, String filePath, String ref) {
-        String encoded = URLEncoder.encode(filePath, StandardCharsets.UTF_8);
+        // GitLab wants the file path URL-encoded into a single segment (slashes -> %2F).
+        // Build a pre-encoded URI and pass it as a URI object so RestClient does NOT re-encode
+        // it (a templated String var would turn %2F into %252F, which GitLab 404s on).
+        String encodedPath = URLEncoder.encode(filePath, StandardCharsets.UTF_8).replace("+", "%20");
+        String encodedRef  = URLEncoder.encode(ref, StandardCharsets.UTF_8).replace("+", "%20");
+        URI uri = URI.create("/api/v4/projects/" + projectId + "/repository/files/"
+                + encodedPath + "/raw?ref=" + encodedRef);
         try {
             return restClient.get()
-                    .uri("/api/v4/projects/{p}/repository/files/{f}/raw?ref={r}", projectId, encoded, ref)
+                    .uri(uri)
                     .retrieve()
                     .body(String.class);
         } catch (HttpClientErrorException.NotFound e) {
