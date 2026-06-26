@@ -8,8 +8,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Set;
-
 /**
  * Accepts GitLab {@code Merge Request Hook} webhook events.
  *
@@ -26,8 +24,7 @@ public class WebhookController {
 
     private static final Logger log = LoggerFactory.getLogger(WebhookController.class);
 
-    private static final String MERGE_REQUEST_HOOK  = "Merge Request Hook";
-    private static final Set<String> REVIEW_ACTIONS = Set.of("open", "update", "reopen");
+    private static final String MERGE_REQUEST_HOOK = "Merge Request Hook";
 
     private final ReviewOrchestrator orchestrator;
     private final GitLabProperties   gitLabProperties;
@@ -55,13 +52,23 @@ public class WebhookController {
             return ResponseEntity.ok().build();
         }
 
-        // 3. Filter action
-        String action = mrEvent.objectAttributes() != null
-                ? mrEvent.objectAttributes().action()
-                : null;
+        // 3. Decide whether this MR change warrants a (re-)review.
+        //    Review on creation/reopen, and on updates ONLY when new commits were pushed
+        //    (oldrev is set). This skips label/description/assignee edits and the trailing
+        //    metadata 'update' GitLab fires right after 'open' (which would double-review).
+        MrEvent.ObjectAttributes attrs = mrEvent.objectAttributes();
+        if (attrs == null) {
+            return ResponseEntity.ok().build();
+        }
+        String action = attrs.action();
+        boolean newCommits = attrs.oldrev() != null && !attrs.oldrev().isBlank();
+        boolean shouldReview =
+                "open".equals(action)
+                || "reopen".equals(action)
+                || ("update".equals(action) && newCommits);
 
-        if (action == null || !REVIEW_ACTIONS.contains(action)) {
-            log.debug("Ignoring MR webhook action: {}", action);
+        if (!shouldReview) {
+            log.debug("Ignoring MR webhook — action={} newCommits={}", action, newCommits);
             return ResponseEntity.ok().build();
         }
 
