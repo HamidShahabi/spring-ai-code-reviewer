@@ -59,73 +59,76 @@ The project follows a two-track delivery strategy: a working Python CI script wa
 
 ---
 
-### Phase 1 — MVP Hardening 🔧 IN PROGRESS
+### Phase 1 — MVP Hardening ✅ COMPLETE
 
-**Duration:** 2–3 weeks  
+**Duration:** 2–3 weeks (completed June 2026)  
 **Goal:** Make the MVP production-safe and demonstrably better for the CTO demo.
 
-**Deliverables and tasks:**
+| # | Task | Status |
+|---|---|---|
+| 1.1 | Fix `verify=False` — add `REQUESTS_CA_BUNDLE` support | ✅ |
+| 1.2 | Upgrade model to claude-haiku-4-5 (native Anthropic SDK) | ✅ |
+| 1.3 | Parse real line numbers from diff `@@` headers | ✅ |
+| 1.4 | Add deduplication — delete stale AI notes before posting | ✅ |
+| 1.5 | Split diff by file and review each chunk separately | ✅ |
+| 1.6 | Add retry decorator with exponential backoff | ✅ |
+| 1.7 | Use JSON Schema structured output (`output_config`) | ✅ |
+| 1.8 | Post review summary comment with severity table | ✅ |
+| 1.9 | Add `MIN_SEVERITY` environment variable | ✅ |
+| 1.10 | Hardening from PR #4 (network error handling, pagination, null guards) | ✅ |
 
-| # | Task | Priority | Effort |
-|---|---|---|---|
-| 1.1 | Fix `verify=False` — add `REQUESTS_CA_BUNDLE` support | Critical | 1h |
-| 1.2 | Upgrade model to `google/gemini-2.0-flash-001` or `qwen/qwen2.5-coder-32b` | Critical | 1h |
-| 1.3 | Parse real line numbers from diff `@@` headers (diff line map) | High | 4h |
-| 1.4 | Add deduplication — delete stale AI notes before posting | High | 2h |
-| 1.5 | Split diff by file and review each chunk separately | High | 4h |
-| 1.6 | Add retry decorator with exponential backoff | Medium | 2h |
-| 1.7 | Use JSON Schema structured output (`response_format`) | Medium | 3h |
-| 1.8 | Post review summary comment with severity table | Medium | 2h |
-| 1.9 | Add `MIN_SEVERITY` environment variable to filter findings | Low | 1h |
-| 1.10 | Write unit tests for diff parser and severity filter | Low | 4h |
-
-**Milestone:** CTO demo-ready Python script with inline comments landing correctly on changed lines.
+**Outcome:** Script v1.2 deployed and running on `root/digicard@staging` in local GitLab.
 
 ---
 
-### Phase 2 — Spring AI Microservice 📋 PLANNED
+### Phase 2 — Spring AI Microservice 🟢 CORE COMPLETE (pending comparison gate)
 
-**Duration:** 6–8 weeks  
+**Stack as built:** Spring Boot 3.5 + Spring AI 1.1.7 (not 4.0/2.0; API shape is compatible for future upgrade)  
 **Goal:** Production-grade microservice architecture presented to the Java Chapter.
 
-#### Sprint 1 — Foundation (weeks 1–2)
+#### Sprint 1 — Foundation ✅ COMPLETE
 
-- [ ] Spring Boot 4.0 + Spring AI 2.0 project scaffold
-- [ ] GitLab webhook endpoint (`POST /api/v1/webhook`)
-- [ ] Webhook signature verification (X-Gitlab-Token header)
-- [ ] GitLabApiClient — fetch diff, metadata, and commit SHAs
-- [ ] Application configuration via `application.yml` and environment variables
-- [ ] Docker image and `docker-compose.yml` for local development
+- [x] Spring Boot 3.5 + Spring AI 1.1.7 project scaffold
+- [x] GitLab webhook endpoint (`POST /api/v1/webhook`)
+- [x] Webhook signature verification (X-Gitlab-Token header)
+- [x] GitLabApiClient — diff, metadata, commit SHAs, file content, blob search
+- [x] Application configuration via `application.yml` + env vars
+- [x] `docker-compose.yml` for local GitLab + Postgres
+- [x] **Event differentiation** — review only on `open`, `reopen`, or `update` with new commits (`oldrev`). Eliminates double-review from GitLab's trailing post-open `update`.
 
-#### Sprint 2 — Core review engine (weeks 3–4)
+#### Sprint 2 — Core review engine ✅ COMPLETE
 
-- [ ] DiffChunker — per-file split with line map extraction
-- [ ] Spring AI ChatClient wired with OpenAI provider
-- [ ] System prompt and user prompt templating (`PromptTemplate`)
-- [ ] Structured output via Spring AI's `BeanOutputConverter`
-- [ ] RulesEngine — severity filtering, company policy rules
-- [ ] CommentPublisher — inline + fallback general comment logic
+- [x] DiffChunker — per-file split with `@@` line-map extraction and extension filtering
+- [x] Spring AI ChatClient wired with Anthropic provider (Haiku)
+- [x] System prompt + user prompt templating
+- [x] Structured output via `BeanOutputConverter` / `.entity(ReviewResponse.class)` with lenient JSON fallback
+- [x] RulesEngine — severity filtering
+- [x] CommentPublisher — inline-first, fallback general comment, deduplication
 
-#### Sprint 3 — Data, resilience, and providers (weeks 5–6)
+#### Sprint 3 — Data, resilience, context strategy ✅ COMPLETE
 
-- [ ] PostgreSQL schema: `mr_reviews`, `findings` tables
-- [ ] Spring Data JPA repositories
-- [ ] Review history — skip re-reviewing unchanged files
-- [ ] `@Retryable` on LLM calls (Spring Retry)
-- [ ] Anthropic Claude provider (ChatClient config profile)
-- [ ] Ollama on-premise provider (ChatClient config profile)
-- [ ] Multi-provider fallback chain
+- [x] PostgreSQL schema: `mr_reviews` (with `prompt_tokens`, `completion_tokens`, `total_tokens`), `findings`
+- [x] Spring Data JPA repositories
+- [x] `@Retryable` on LLM calls (no retry on `IllegalStateException` parse failures)
+- [x] Anthropic Claude provider; OpenAI-compatible config also wired
+- [x] **Token usage auditing** — `extractUsage(ChatResponse)` → `LlmUsage`, persisted per review + `reviewer.llm.tokens.total` Micrometer counter
+- [x] **Config-selected context strategy** (`CONTEXT_STRATEGY` env var):
+  - `none` — diff only (baseline, default)
+  - `injected` — prepends full file at `head_commit_sha` to each prompt (deterministic floor, SHA-pinned)
+  - `agentic` — exposes `@Tool` methods to model (experimental; haiku does not drive tools reliably)
+- [x] **A/B comparison infrastructure** — `digicard-mirror` project (id=3) on local GitLab, CI disabled, microservice webhook registered; `digicard` (id=2) remains untouched for Python script comparison
 
-#### Sprint 4 — Operations and presentation (weeks 7–8)
+#### Sprint 4 — Operations and presentation 🔧 PENDING
 
-- [ ] Micrometer metrics: review count, latency, error rate, inline success rate
-- [ ] Health check endpoints (`/actuator/health`)
-- [ ] Slack / Teams webhook notification (optional, toggle via config)
-- [ ] Kubernetes manifest (`Deployment`, `Service`, `ConfigMap`, `Secret`)
-- [ ] README, architecture doc, ADRs
-- [ ] Java Chapter demo preparation
+- [x] Micrometer metrics (`reviewer.llm.tokens.total`, review count, latency)
+- [x] Health check (`/actuator/health`)
+- [ ] Java Chapter demo preparation (slides, live demo script)
+- [ ] Kubernetes manifests
+- [ ] Slack / Teams notification (optional)
 
-**Milestone:** Live demo to Java Chapter. Spring AI microservice reviewing a real MR in under 60 seconds from webhook receipt.
+**Merge gate (self-imposed):** Run none vs injected side-by-side on the same `digicard-mirror` MR and confirm injected finds-per-token beats baseline. Data decides the default strategy. (Task #10)
+
+**Milestone:** Live demo to Java Chapter — microservice reviews a real MR under 60 seconds from webhook receipt. ✅ Verified locally (avg ~15–25s).
 
 ---
 

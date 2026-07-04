@@ -8,8 +8,12 @@ import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
+import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -118,6 +122,49 @@ public class GitLabApiClient {
         return null;
     }
 
+    // ─── Repository reads (for tool-calling context) ─────────────────────────
+
+    /**
+     * Raw content of a file at a specific commit SHA / ref. Returns {@code null} when
+     * the file does not exist at that ref (e.g. a newly added file in the MR), so the
+     * caller can degrade gracefully instead of throwing.
+     */
+    @Retryable(retryFor = Exception.class, maxAttempts = 2, backoff = @Backoff(delay = 1000))
+    public String fetchFileAtRef(long projectId, String filePath, String ref) {
+        // GitLab wants the file path URL-encoded into a single segment (slashes -> %2F).
+        // Build a pre-encoded URI and pass it as a URI object so RestClient does NOT re-encode
+        // it (a templated String var would turn %2F into %252F, which GitLab 404s on).
+        String encodedPath = URLEncoder.encode(filePath, StandardCharsets.UTF_8).replace("+", "%20");
+        String encodedRef  = URLEncoder.encode(ref, StandardCharsets.UTF_8).replace("+", "%20");
+        URI uri = URI.create("/api/v4/projects/" + projectId + "/repository/files/"
+                + encodedPath + "/raw?ref=" + encodedRef);
+        try {
+            return restClient.get()
+                    .uri(uri)
+                    .retrieve()
+                    .body(String.class);
+        } catch (HttpClientErrorException.NotFound e) {
+            return null;
+        }
+    }
+
+    /**
+     * Blob search scoped to a ref — used to locate where a symbol is defined or used.
+     * Best-effort: returns an empty list if search is unavailable or errors.
+     */
+    public List<SearchHit> searchBlobs(long projectId, String term, String ref) {
+        try {
+            List<SearchHit> hits = restClient.get()
+                    .uri("/api/v4/projects/{p}/search?scope=blobs&search={s}&ref={r}", projectId, term, ref)
+                    .retrieve()
+                    .body(new ParameterizedTypeReference<>() {});
+            return hits != null ? hits : List.of();
+        } catch (Exception e) {
+            log.debug("Blob search failed for '{}' @ {}: {}", term, ref, e.getMessage());
+            return List.of();
+        }
+    }
+
     // ─── Labels ──────────────────────────────────────────────────────────────
 
     public void addLabel(long projectId, long mrIid, String label) {
@@ -151,6 +198,13 @@ public class GitLabApiClient {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record GitLabNote(long id, String body) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SearchHit(
+            String path,
+            @JsonProperty("startline") int startLine,
+            String data
+    ) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     private record DiscussionResponse(List<GitLabNote> notes) {}

@@ -8,8 +8,11 @@ An AI-powered code review system for GitLab Merge Requests. Analyses every MR di
 
 | Stream | Version | State |
 |---|---|---|
-| MVP (Python CI script) | v1.1 | ✅ Deployed & running |
-| Spring AI Microservice | v2.0 | 🔧 In planning |
+| MVP (Python CI script) | v1.2 | ✅ Deployed & hardened (PR #4 applied) |
+| Spring AI Microservice | v0.9 | 🟢 Running locally — core review loop working, feature branch `feat/tool-calling-context` |
+
+**Current active branch:** `feat/tool-calling-context`  
+**Pending before merge:** A/B comparison of none/injected/script modes on same MR (Task #10).
 
 ---
 
@@ -76,6 +79,7 @@ flowchart TD
 | [ADR-001 Technology Choice](docs/adr/ADR-001-technology-choice.md) | Why Spring AI microservice over Python script |
 | [ADR-002 Model Selection](docs/adr/ADR-002-model-selection.md) | Why Gemini Flash / Qwen2.5-Coder as default models |
 | [ADR-003 Comment Strategy](docs/adr/ADR-003-comment-strategy.md) | Inline-first with general comment fallback |
+| [Strategy Comparison Report](docs/COMPARISON_REPORT.md) | none vs injected vs Python script on same MR — data and verdict |
 
 ---
 
@@ -101,14 +105,16 @@ MIN_SEVERITY     = Low
 
 ## Technology stack
 
-| Layer | Current MVP | Target (v2) |
+| Layer | MVP (Python) | Microservice (Java) |
 |---|---|---|
 | Language | Python 3.11 | Java 21 |
-| Framework | — | Spring Boot 4 + Spring AI 2.0 |
-| Trigger | GitLab CI pipeline | GitLab Webhook |
-| AI providers | OpenRouter (any model) | Spring AI ChatClient (OpenAI, Anthropic, Ollama) |
-| Storage | None | PostgreSQL |
-| Notifications | GitLab comments only | GitLab + Slack / Teams |
+| Framework | — | Spring Boot 3.5 + Spring AI 1.1.7 |
+| Trigger | GitLab CI pipeline | GitLab Webhook (event-differentiated) |
+| AI providers | Anthropic Claude Haiku (native) | Spring AI ChatClient (Anthropic / OpenAI / Ollama) |
+| Context strategy | Diff only | Configurable: `none` / `injected` / `agentic` |
+| Token auditing | None | Per-call, persisted to DB + Micrometer metric |
+| Storage | None | PostgreSQL (`mr_reviews`, `findings`) |
+| Notifications | GitLab inline + fallback comments | Same |
 
 ---
 

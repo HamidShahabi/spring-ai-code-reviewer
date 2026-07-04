@@ -4,6 +4,8 @@ import com.example.aireviewer.domain.*;
 import com.example.aireviewer.infrastructure.CommentPublisher;
 import com.example.aireviewer.infrastructure.GitLabApiClient;
 import com.example.aireviewer.repository.ReviewRepository;
+import com.example.aireviewer.service.context.ContextStrategy;
+import com.example.aireviewer.service.context.ContextStrategyFactory;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
@@ -42,6 +44,7 @@ public class ReviewOrchestrator {
     private final CommentPublisher commentPublisher;
     private final ReviewRepository reviewRepository;
     private final MeterRegistry    meterRegistry;
+    private final ContextStrategyFactory contextStrategyFactory;
 
     /** Active LLM model name, resolved from Spring AI config for auditability and the summary comment. */
     private final String modelName;
@@ -54,6 +57,7 @@ public class ReviewOrchestrator {
             CommentPublisher commentPublisher,
             ReviewRepository reviewRepository,
             MeterRegistry meterRegistry,
+            ContextStrategyFactory contextStrategyFactory,
             @Value("${spring.ai.model.chat:openai}") String provider,
             @Value("${spring.ai.anthropic.chat.model:unknown}") String anthropicModel,
             @Value("${spring.ai.openai.chat.options.model:unknown}") String openAiModel) {
@@ -64,6 +68,7 @@ public class ReviewOrchestrator {
         this.commentPublisher = commentPublisher;
         this.reviewRepository = reviewRepository;
         this.meterRegistry    = meterRegistry;
+        this.contextStrategyFactory = contextStrategyFactory;
         this.modelName        = "anthropic".equalsIgnoreCase(provider) ? anthropicModel : openAiModel;
     }
 
@@ -101,10 +106,18 @@ public class ReviewOrchestrator {
             }
 
             // ── 3. Review each file independently ────────────────────────
+            // One context strategy per MR (config-selected: none | injected | agentic). It may
+            // hold per-MR state (fetch cache, shared tool budget), so it's shared across files.
+            ContextStrategy strategy = contextStrategyFactory.create(ctx);
+            log.info("Context strategy = {}", strategy.name());
+
             List<ReviewResponse.FindingDto> allFindings = new ArrayList<>();
+            LlmUsage totalUsage = LlmUsage.ZERO;
             for (FileChunk chunk : chunks) {
                 try {
-                    allFindings.addAll(llmReviewService.review(chunk, ctx));
+                    FileReviewResult result = llmReviewService.review(chunk, ctx, strategy);
+                    allFindings.addAll(result.findings());
+                    totalUsage = totalUsage.add(result.usage());
                 } catch (Exception e) {
                     log.warn("Skipping file {} after LLM failure: {}", chunk.filePath(), e.getMessage());
                 }
@@ -124,13 +137,17 @@ public class ReviewOrchestrator {
 
             // ── 6. Persist session + per-finding audit trail ─────────────
             long durationMs = System.currentTimeMillis() - startMs;
-            reviewRepository.save(buildReviewEntity(ctx, chunks.size(), filtered, fellBack, durationMs));
+            reviewRepository.save(buildReviewEntity(ctx, chunks.size(), filtered, fellBack, durationMs, totalUsage));
 
             meterRegistry.counter("reviewer.mr.processed.total").increment();
             meterRegistry.counter("reviewer.finding.total",
                     "severity", "total").increment(filtered.size());
-            log.info("Review complete — mrIid={} findings={} duration={}ms",
-                    mrIid, filtered.size(), durationMs);
+            meterRegistry.counter("reviewer.llm.tokens.total", "type", "prompt").increment(totalUsage.promptTokens());
+            meterRegistry.counter("reviewer.llm.tokens.total", "type", "completion").increment(totalUsage.completionTokens());
+            log.info("Review complete — mrIid={} findings={} tokens(p/c/t)={}/{}/{} duration={}ms",
+                    mrIid, filtered.size(),
+                    totalUsage.promptTokens(), totalUsage.completionTokens(), totalUsage.totalTokens(),
+                    durationMs);
 
         } catch (Exception e) {
             log.error("Review failed — project={} mrIid={}: {}",
@@ -163,10 +180,13 @@ public class ReviewOrchestrator {
     private MrReview buildReviewEntity(MrContext ctx, int filesReviewed,
                                         List<ReviewResponse.FindingDto> findings,
                                         List<ReviewResponse.FindingDto> fellBack,
-                                        long durationMs) {
+                                        long durationMs, LlmUsage usage) {
         MrReview review = new MrReview(ctx.projectId(), ctx.mrIid(), modelName);
         review.setFilesReviewed(filesReviewed);
         review.setDurationMs(durationMs);
+        review.setPromptTokens(usage.promptTokens());
+        review.setCompletionTokens(usage.completionTokens());
+        review.setTotalTokens(usage.totalTokens());
         review.setFindingsHigh((int) findings.stream()
                 .filter(f -> "High".equalsIgnoreCase(f.severity())).count());
         review.setFindingsMedium((int) findings.stream()

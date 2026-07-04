@@ -63,6 +63,15 @@ reviewer:
   request-timeout-seconds: 120
   retry-max-attempts:     3
   retry-backoff-seconds:  2
+  # How much repo context the model gets, at the exact reviewed SHA (no pre-indexing).
+  #   none     → diff only (baseline)
+  #   injected → also inject the full changed file (deterministic floor; any model)
+  #   agentic  → expose tools so the model pulls context itself (experimental; needs a
+  #              tool-capable model — haiku currently does not drive the tools well)
+  context:
+    strategy:           ${CONTEXT_STRATEGY:injected}
+    max-file-lines:     ${CONTEXT_MAX_FILE_LINES:400}
+    agentic-call-budget: ${CONTEXT_AGENTIC_BUDGET:6}
   ignore-extensions:
     - .lock
     - go.sum

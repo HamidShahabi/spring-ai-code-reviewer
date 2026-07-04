@@ -17,6 +17,7 @@ services:
   postgres:
     image: registry.docker.ir/postgres:16
     container_name: reviewer-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB:       ai_reviewer
       POSTGRES_USER:     reviewer
@@ -56,6 +57,7 @@ services:
     image: registry.docker.ir/gitlab/gitlab-ce:latest
     container_name: reviewer-gitlab
     profiles: ["gitlab"]
+    restart: unless-stopped
     hostname: gitlab.local
     environment:
       GITLAB_OMNIBUS_CONFIG: |

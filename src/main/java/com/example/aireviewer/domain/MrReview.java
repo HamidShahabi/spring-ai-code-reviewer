@@ -49,6 +49,15 @@ public class MrReview {
     @Column(name = "duration_ms")
     private long durationMs;
 
+    @Column(name = "prompt_tokens")
+    private int promptTokens;
+
+    @Column(name = "completion_tokens")
+    private int completionTokens;
+
+    @Column(name = "total_tokens")
+    private int totalTokens;
+
     @OneToMany(mappedBy = "review", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<Finding> findings = new ArrayList<>();
 
@@ -75,6 +84,9 @@ public class MrReview {
     public int getFindingsLow()       { return findingsLow; }
     public int getFindingsNitpick()   { return findingsNitpick; }
     public long getDurationMs()       { return durationMs; }
+    public int getPromptTokens()      { return promptTokens; }
+    public int getCompletionTokens()  { return completionTokens; }
+    public int getTotalTokens()       { return totalTokens; }
     public List<Finding> getFindings(){ return findings; }
 
     /**
@@ -91,4 +103,7 @@ public class MrReview {
     public void setFindingsLow(int findingsLow)           { this.findingsLow = findingsLow; }
     public void setFindingsNitpick(int findingsNitpick)   { this.findingsNitpick = findingsNitpick; }
     public void setDurationMs(long durationMs)            { this.durationMs = durationMs; }
+    public void setPromptTokens(int promptTokens)         { this.promptTokens = promptTokens; }
+    public void setCompletionTokens(int completionTokens) { this.completionTokens = completionTokens; }
+    public void setTotalTokens(int totalTokens)           { this.totalTokens = totalTokens; }
 }

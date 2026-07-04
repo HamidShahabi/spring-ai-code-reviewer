@@ -26,6 +26,8 @@ public record MrEvent(
             String title,
             String description,
             String state,
-            String action
+            String action,
+            /** Previous head SHA — GitLab sets this only when the update carried new commits. */
+            @JsonProperty("oldrev") String oldrev
     ) {}
 }

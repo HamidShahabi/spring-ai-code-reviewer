@@ -1,9 +1,9 @@
 # Architecture — AI Code Reviewer
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Author:** Engineering Team  
 **Last updated:** June 2026  
-**Status:** Draft
+**Status:** Reflects built state (feat/tool-calling-context branch)
 
 ---
 
@@ -86,13 +86,22 @@ flowchart TD
 - **Responsibility:** Accept `POST /api/v1/webhook` from GitLab, verify the `X-Gitlab-Token` header, parse the event payload, and dispatch to `ReviewOrchestrator` asynchronously.
 - **Key decisions:** Async dispatch via `@Async` so the endpoint returns `202 Accepted` immediately. GitLab expects a fast acknowledgement; the review happens in the background.
 
+**Event differentiation logic** (GitLab cannot sub-filter MR actions — the controller does it):
+
 ```
 POST /api/v1/webhook
         │
-        ├── Validate X-Gitlab-Token  ──► 401 if invalid
-        ├── Parse event type         ──► 200 if not MR open/update
-        └── dispatch(mrEvent)        ──► 202 Accepted (async)
+        ├── Validate X-Gitlab-Token          ──► 401 if invalid
+        ├── Check X-Gitlab-Event header      ──► 200 if not "Merge Request Hook"
+        ├── Read object_attributes.action:
+        │       open / reopen                ──► review (MR created or reopened)
+        │       update + oldrev present      ──► review (new commits pushed)
+        │       update + no oldrev           ──► 200 skip (label/desc/assignee edit)
+        │       close / merge / other        ──► 200 skip
+        └── dispatch(mrEvent)                ──► 202 Accepted (async)
 ```
+
+`oldrev` in the GitLab payload is set **only** when the `update` event carried new commits. This also eliminates the spurious trailing `update` GitLab fires right after `open` (no `oldrev` → skipped).
 
 ### 4.2 ReviewOrchestrator
 
@@ -123,28 +132,47 @@ public record FileChunk(
 ### 4.5 LlmReviewService (Spring AI ChatClient)
 
 - **Layer:** Infrastructure / AI gateway (`@Service`)
-- **Responsibility:** Wraps Spring AI's `ChatClient` to send a `FileChunk` to the configured LLM and receive a `List<Finding>` back.
+- **Responsibility:** Wraps Spring AI's `ChatClient` to send a `FileChunk` to the configured LLM and receive `FileReviewResult` (findings + token usage) back.
 - **Key decisions:**
-  - Uses `ChatClient.Builder` injected by Spring AI auto-configuration.
-  - Output is parsed via Spring AI's `BeanOutputConverter<ReviewResponse>` — no manual JSON parsing.
-  - The LLM provider is fully swappable via `application.yml` with no code change.
+  - Uses `ChatClient.Builder` injected by Spring AI auto-configuration — provider is config-only.
+  - Non-tool path: `.responseEntity(ReviewResponse.class)` for structured output + access to `ChatResponse` metadata.
+  - Tool path: `.chatResponse()` + lenient JSON parse (strips fences, extracts first `{..}` block).
+  - `@Retryable` with `noRetryFor = IllegalStateException.class` so parse failures don't retry.
+  - Token usage extracted from `ChatResponse.getMetadata().getUsage()` — provider-agnostic.
 
-```java
-@Service
-public class LlmReviewService {
+### 4.5a ContextStrategy — configurable repo context
 
-    private final ChatClient chatClient;
+Three strategies selected via `CONTEXT_STRATEGY` environment variable (or `reviewer.context.strategy` in yml):
 
-    public List<Finding> review(FileChunk chunk, MrContext mr) {
-        return chatClient.prompt()
-            .system(systemPromptTemplate.render(chunk.validLines()))
-            .user(userPromptTemplate.render(mr, chunk))
-            .call()
-            .entity(ReviewResponse.class)  // Spring AI BeanOutputConverter
-            .reviews();
-    }
-}
+| Strategy | What the model sees | Use case |
+|---|---|---|
+| `none` (default) | Diff only | Baseline; lowest token cost |
+| `injected` | Diff + full file at `head_commit_sha` | Deterministic floor; any model; catches issues the diff doesn't show |
+| `agentic` | Diff + `@Tool` methods the model can call | Highest potential coverage; requires a tool-capable model |
+
 ```
+ContextStrategyFactory.create(MrContext)
+    │
+    ├── "injected" → InjectedStrategy(gitlab, ctx, maxLines)
+    │       injectedContextFor(chunk): fetchFileAtRef(sha) → truncate → prepend
+    │
+    ├── "agentic" → AgenticStrategy(RepoContextTools)
+    │       tools(): returns RepoContextTools with getFile / lookupSymbol @Tool methods
+    │       budget: CONTEXT_AGENTIC_BUDGET calls per review (default 6)
+    │
+    └── "none"    → NoneStrategy.INSTANCE (no-op)
+```
+
+**Path encoding note:** `fetchFileAtRef` builds a `URI` object (not a template string) to prevent RestClient from double-encoding `%2F` → `%252F` (which GitLab 404s on).
+
+### 4.5b Token usage auditing
+
+Every LLM call records `LlmUsage(promptTokens, completionTokens, totalTokens)` from `ChatResponse.getMetadata().getUsage()`. Accumulated across files via `LlmUsage.add()` and:
+- Persisted to `mr_reviews.prompt_tokens / completion_tokens / total_tokens`
+- Published as `reviewer.llm.tokens.total` Micrometer counter (tags: `prompt`, `completion`)
+- Logged at INFO: `"Review complete — mrIid=X findings=Y tokens(p/c/t)=P/C/T duration=Zms"`
+
+Purpose: enables empirical comparison across strategies and script vs microservice modes.
 
 ### 4.6 RulesEngine
 
@@ -255,8 +283,8 @@ Namespace: ai-tools
 | Component | Technology | Version | Rationale |
 |---|---|---|---|
 | Language | Java | 21 | Virtual threads, records, pattern matching; team standard |
-| Framework | Spring Boot | 4.0.x | Latest stable; required by Spring AI 2.0 |
-| AI abstraction | Spring AI | 2.0.0 | Provider-agnostic ChatClient; MCP-first architecture |
+| Framework | Spring Boot | 3.5.x | Current stable; Spring AI 1.x compatible |
+| AI abstraction | Spring AI | 1.1.7 | Provider-agnostic ChatClient; upgrade path to 2.0 when stable |
 | HTTP server | Spring MVC | (included) | Familiar, well-tested |
 | HTTP client | Spring RestClient | (included) | Modern replacement for RestTemplate |
 | Database | PostgreSQL | 16 | Reliable, JSON support for flexible finding storage |
@@ -282,6 +310,7 @@ Namespace: ai-tools
 | `reviewer.comment.inline.fallback` | Counter | Fell back to general comment |
 | `reviewer.llm.request.duration` | Timer | LLM API call duration by provider (tag: `provider`) |
 | `reviewer.llm.error.total` | Counter | LLM API errors by type |
+| `reviewer.llm.tokens.total` | Counter | Token consumption per review (tags: `prompt`, `completion`) |
 
 ### Logging
 
