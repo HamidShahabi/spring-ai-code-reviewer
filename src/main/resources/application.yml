@@ -69,7 +69,7 @@ reviewer:
   #   agentic  → expose tools so the model pulls context itself (experimental; needs a
   #              tool-capable model — haiku currently does not drive the tools well)
   context:
-    strategy:           ${CONTEXT_STRATEGY:none}
+    strategy:           ${CONTEXT_STRATEGY:injected}
     max-file-lines:     ${CONTEXT_MAX_FILE_LINES:400}
     agentic-call-budget: ${CONTEXT_AGENTIC_BUDGET:6}
   ignore-extensions:

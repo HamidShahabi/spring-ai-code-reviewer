@@ -77,9 +77,30 @@ public class LlmReviewService {
     private static final String TOOLS_HINT = """
 
             You have tools to fetch the full file, a related file, or a symbol's definition AT THE
-            EXACT REVISION UNDER REVIEW. Before flagging a *possible* issue you cannot confirm from
-            the diff alone, fetch the context to verify it. Be frugal: only fetch what you genuinely
-            need, and do not fetch files you can already reason about from the diff.
+            EXACT REVISION UNDER REVIEW:
+              - getFile(path): read the full source of a file at this exact revision.
+              - lookupSymbol(symbol): find where a class, method, or field is defined or used.
+
+            MANDATORY TOOL USE: if the diff calls a method, reads a field, or uses a type that is
+            DEFINED IN A DIFFERENT FILE (not shown in this diff), and you are about to make a claim
+            about its nullability, return type, thrown exceptions, or behavior, you MUST call
+            getFile or lookupSymbol on that symbol BEFORE including the finding. Do not guess from
+            naming conventions. An unverified assumption about external code is worse than not
+            reporting the finding at all — either verify it or drop it.
+
+            Examples that REQUIRE a tool call before you may state them as findings:
+              - "X.getY() may return null" — confirm Y's actual declared type first.
+              - Any claim about a superclass, interface, or injected dependency's behavior.
+
+            GO ONE LEVEL DEEPER WHEN NEEDED: verifying a method's return type is often not the
+            end of the trail. If that return type is itself a class you have not seen, and your
+            finding depends on one of ITS fields (e.g. a boxed type that can be null, a mutable
+            collection, a missing validation), fetch that class too before stating the finding.
+            Stopping after the first fetch when the real risk is one hop further is the same as
+            not verifying at all.
+
+            You do NOT need to fetch the file already shown in the diff — you have its content.
+            Be frugal beyond the mandatory cases above: do not fetch files out of curiosity.
 
             OUTPUT FORMAT — STRICT: You may call tools first to gather context, but your FINAL
             message must be ONLY the JSON object specified above. No analysis, no prose, no markdown

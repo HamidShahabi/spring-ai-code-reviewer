@@ -50,6 +50,15 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
+        <!-- Boot auto-prefers this over the JDK HttpClient for RestClient/RestTemplate.
+             The JDK client attempts an HTTP/2 cleartext (h2c) upgrade on every request,
+             which uvicorn/h11-based OpenAI-compatible servers (vLLM) mishandle, silently
+             dropping the request body. HttpClient5 sticks to plain HTTP/1.1. -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+        </dependency>
+
         <!-- ── Persistence ──────────────────────────────────────────────── -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

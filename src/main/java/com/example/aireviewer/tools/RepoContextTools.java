@@ -67,7 +67,7 @@ public class RepoContextTools {
         return fileCache.computeIfAbsent(clean, p -> {
             String content = gitlab.fetchFileAtRef(projectId, p, ref);
             if (content == null) return "FILE_NOT_FOUND at the reviewed revision: " + p;
-            log.debug("tool getFile served '{}' @ {}", p, ref);
+            log.info("tool getFile served '{}' @ {}", p, ref);
             return truncate(content);
         });
     }
@@ -85,12 +85,15 @@ public class RepoContextTools {
                 .limit(10)
                 .map(h -> h.path() + ":" + h.startLine())
                 .collect(Collectors.joining("\n"));
+        log.info("tool lookupSymbol served '{}' @ {}", term, ref);
         return hits.isEmpty() ? "No matches for: " + term : hits;
     }
 
     /** @return true if a call slot was available (and consumed), false if the budget is spent. */
     private boolean claim() {
-        return budget.getAndDecrement() > 0;
+        boolean available = budget.getAndDecrement() > 0;
+        if (!available) log.info("tool call budget exhausted @ {}", ref);
+        return available;
     }
 
     private String truncate(String content) {
