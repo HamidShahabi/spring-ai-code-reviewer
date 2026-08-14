@@ -19,9 +19,11 @@ import java.util.stream.Collectors;
  * Strategy (ADR-003):
  * <ol>
  *   <li>Delete all previous AI review notes (deduplication).</li>
- *   <li>Post a summary comment first.</li>
- *   <li>For each finding attempt an inline comment; collect failures in a fallback list.</li>
- *   <li>Post any fallback findings as a single general comment.</li>
+ *   <li>Stage the summary and every finding as draft notes — invisible on the MR so far.</li>
+ *   <li>For each finding attempt an inline draft; collect failures in a fallback draft.</li>
+ *   <li>Bulk-publish every draft at once — the API equivalent of clicking GitLab's
+ *       "Submit review" button, so the whole review lands atomically instead of
+ *       trickling in comment-by-comment.</li>
  * </ol>
  */
 @Component
@@ -39,7 +41,7 @@ public class CommentPublisher {
         this.inlineFallback  = registry.counter("reviewer.comment.inline.fallback");
     }
 
-    /** Deletes all notes previously written by this reviewer. */
+    /** Deletes all previously published notes written by this reviewer. */
     public void deleteStaleNotes(long projectId, long mrIid) {
         try {
             gitLabApiClient.listNotes(projectId, mrIid).stream()
@@ -57,28 +59,43 @@ public class CommentPublisher {
         }
     }
 
-    /** Posts the severity-breakdown summary comment. */
-    public void postSummary(long projectId, long mrIid,
-                             List<ReviewResponse.FindingDto> findings,
-                             String modelUsed) {
-        gitLabApiClient.postNote(projectId, mrIid, buildSummary(findings, modelUsed));
+    /**
+     * Discards any leftover draft notes from a previous run that crashed between staging
+     * and publishing — otherwise they'd get swept into this run's bulk-publish alongside
+     * the fresh review.
+     */
+    public void discardStaleDrafts(long projectId, long mrIid) {
+        try {
+            for (Long id : gitLabApiClient.listOwnDraftNoteIds(projectId, mrIid)) {
+                try {
+                    gitLabApiClient.deleteDraftNote(projectId, mrIid, id);
+                } catch (Exception e) {
+                    log.warn("Could not delete stale draft note {}: {}", id, e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to list draft notes for stale cleanup: {}", e.getMessage());
+        }
     }
 
     /**
-     * Publishes each finding — inline first, general comment on failure.
+     * Stages the summary and every finding as draft notes, then publishes them all at once
+     * (GitLab's "Submit review" action) so the whole review appears atomically.
      *
-     * @return the subset of findings that fell back to a general comment
+     * @return the subset of findings that fell back to a general (non-inline) draft note
      */
-    public List<ReviewResponse.FindingDto> publishFindings(
+    public List<ReviewResponse.FindingDto> submitReview(
             long projectId, long mrIid,
             List<ReviewResponse.FindingDto> findings,
+            String modelUsed,
             MrContext mrContext) {
 
-        List<ReviewResponse.FindingDto> fallback = new ArrayList<>();
+        gitLabApiClient.createDraftNote(projectId, mrIid, buildSummary(findings, modelUsed));
 
+        List<ReviewResponse.FindingDto> fallback = new ArrayList<>();
         for (ReviewResponse.FindingDto f : findings) {
-            boolean posted = tryInline(projectId, mrIid, f, mrContext);
-            if (posted) {
+            boolean staged = tryDraftInline(projectId, mrIid, f, mrContext);
+            if (staged) {
                 inlineSuccess.increment();
             } else {
                 inlineFallback.increment();
@@ -87,27 +104,28 @@ public class CommentPublisher {
         }
 
         if (!fallback.isEmpty()) {
-            gitLabApiClient.postNote(projectId, mrIid, buildFallback(fallback));
+            gitLabApiClient.createDraftNote(projectId, mrIid, buildFallback(fallback));
         }
 
+        gitLabApiClient.bulkPublishDraftNotes(projectId, mrIid);
         return fallback;
     }
 
     // ─── Private helpers ─────────────────────────────────────────────────────
 
-    private boolean tryInline(long projectId, long mrIid,
-                               ReviewResponse.FindingDto finding,
-                               MrContext ctx) {
+    private boolean tryDraftInline(long projectId, long mrIid,
+                                    ReviewResponse.FindingDto finding,
+                                    MrContext ctx) {
         try {
-            Long id = gitLabApiClient.postInlineComment(
+            gitLabApiClient.createDraftInlineNote(
                     projectId, mrIid,
                     buildInline(finding),
                     finding.file(), finding.line(),
                     ctx.baseCommitSha(), ctx.headCommitSha(), ctx.startCommitSha()
             );
-            return id != null;
+            return true;
         } catch (Exception e) {
-            log.warn("Inline comment failed for {}:{} — falling back. Reason: {}",
+            log.warn("Inline draft note failed for {}:{} — falling back. Reason: {}",
                     finding.file(), finding.line(), e.getMessage());
             return false;
         }

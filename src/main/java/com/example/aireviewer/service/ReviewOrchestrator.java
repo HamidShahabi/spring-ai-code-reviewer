@@ -82,6 +82,8 @@ public class ReviewOrchestrator {
         long startMs = System.currentTimeMillis();
 
         try {
+            assignSelfAsReviewer(projectId, mrIid);
+
             // ── 1. Fetch diff and commit SHAs ─────────────────────────────
             List<GitLabApiClient.DiffFile> diffFiles =
                     gitLabApiClient.fetchDiff(projectId, mrIid);
@@ -127,13 +129,21 @@ public class ReviewOrchestrator {
             List<ReviewResponse.FindingDto> filtered = rulesEngine.filter(allFindings);
 
             // ── 5. Publish ───────────────────────────────────────────────
+            // Stage the summary + every finding as draft notes, then publish them all at
+            // once — the API equivalent of clicking GitLab's "Submit review" button — so
+            // the whole review lands atomically instead of trickling in comment-by-comment.
             commentPublisher.deleteStaleNotes(projectId, mrIid);
-            commentPublisher.postSummary(projectId, mrIid, filtered, modelName);
+            commentPublisher.discardStaleDrafts(projectId, mrIid);
             List<ReviewResponse.FindingDto> fellBack =
-                    commentPublisher.publishFindings(projectId, mrIid, filtered, ctx);
+                    commentPublisher.submitReview(projectId, mrIid, filtered, modelName, ctx);
 
             // ── 5b. Tag the MR so reviewers can see it was AI-reviewed ────
             applyLabels(projectId, mrIid, filtered);
+
+            // ── 5c. Submit the bot's own review verdict ──────────────────
+            // Approve only when nothing worth reporting was found — merging is always a
+            // human decision either way; this just records that the bot's pass was clean.
+            submitReviewVerdict(projectId, mrIid, filtered);
 
             // ── 6. Persist session + per-finding audit trail ─────────────
             long durationMs = System.currentTimeMillis() - startMs;
@@ -158,6 +168,34 @@ public class ReviewOrchestrator {
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
+
+    /** Adds the bot's own account as an MR Reviewer as soon as review work begins, alongside any existing reviewers. */
+    private void assignSelfAsReviewer(long projectId, long mrIid) {
+        try {
+            gitLabApiClient.addReviewer(projectId, mrIid, gitLabApiClient.currentUserId());
+        } catch (Exception e) {
+            log.warn("Failed to assign bot as reviewer on MR {}: {}", mrIid, e.getMessage());
+        }
+    }
+
+    /**
+     * Approves the MR when nothing worth reporting was found (post severity-filter), or
+     * withdraws a stale prior approval when a re-review (new commits) now finds issues that
+     * an earlier, cleaner pass didn't. Merging is always a human decision regardless — this
+     * only keeps the bot's own approval state honest about its latest pass. Never throws: an
+     * approve/unapprove failure (e.g. bot lacks project permission) should not fail the review.
+     */
+    private void submitReviewVerdict(long projectId, long mrIid, List<ReviewResponse.FindingDto> findings) {
+        try {
+            if (findings.isEmpty()) {
+                gitLabApiClient.approve(projectId, mrIid);
+            } else {
+                gitLabApiClient.unapprove(projectId, mrIid);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to update approval state on MR {}: {}", mrIid, e.getMessage());
+        }
+    }
 
     /**
      * Adds the {@code ai-reviewed} label to every reviewed MR, plus {@code ai-high-severity}

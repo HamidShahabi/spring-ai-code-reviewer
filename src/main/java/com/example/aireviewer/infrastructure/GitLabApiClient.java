@@ -14,6 +14,7 @@ import org.springframework.web.client.RestClient;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -32,8 +33,25 @@ public class GitLabApiClient {
 
     private final RestClient restClient;
 
+    /** Cached id of the account this client authenticates as (the bot). Resolved once. */
+    private volatile Long currentUserId;
+
     public GitLabApiClient(RestClient gitLabRestClient) {
         this.restClient = gitLabRestClient;
+    }
+
+    /** The GitLab user id of the account {@code gitLabRestClient} authenticates as (self-lookup, cached). */
+    public long currentUserId() {
+        Long id = currentUserId;
+        if (id == null) {
+            CurrentUser user = restClient.get().uri("/api/v4/user").retrieve().body(CurrentUser.class);
+            if (user == null) {
+                throw new IllegalStateException("Could not resolve current GitLab user (check gitlab.bot-token)");
+            }
+            id = user.id();
+            currentUserId = id;
+        }
+        return id;
     }
 
     // ─── Diff and versions ───────────────────────────────────────────────────
@@ -175,6 +193,120 @@ public class GitLabApiClient {
                 .toBodilessEntity();
     }
 
+    // ─── Draft notes ("pending review", published together via Submit review) ─
+
+    /** Creates a draft (pending) general note — invisible on the MR until {@link #bulkPublishDraftNotes}. */
+    public void createDraftNote(long projectId, long mrIid, String body) {
+        restClient.post()
+                .uri("/api/v4/projects/{p}/merge_requests/{m}/draft_notes", projectId, mrIid)
+                .body(Map.of("note", body))
+                .retrieve()
+                .toBodilessEntity();
+    }
+
+    /** Creates a draft (pending) inline note anchored to a diff line. Same position shape as {@link #postInlineComment}. */
+    public void createDraftInlineNote(long projectId, long mrIid, String body, String filePath, int line,
+                                      String baseSha, String headSha, String startSha) {
+        Map<String, Object> payload = Map.of(
+                "note", body,
+                "position", Map.of(
+                        "base_sha",      baseSha,
+                        "head_sha",      headSha,
+                        "start_sha",     startSha,
+                        "position_type", "text",
+                        "new_path",      filePath,
+                        "new_line",      line
+                )
+        );
+        restClient.post()
+                .uri("/api/v4/projects/{p}/merge_requests/{m}/draft_notes", projectId, mrIid)
+                .body(payload)
+                .retrieve()
+                .toBodilessEntity();
+    }
+
+    /** Lists this user's own pending draft notes on the MR (used to clean up after a crashed prior run). */
+    public List<Long> listOwnDraftNoteIds(long projectId, long mrIid) {
+        List<DraftNote> notes = restClient.get()
+                .uri("/api/v4/projects/{p}/merge_requests/{m}/draft_notes", projectId, mrIid)
+                .retrieve()
+                .body(new ParameterizedTypeReference<>() {});
+        return notes == null ? List.of() : notes.stream().map(DraftNote::id).toList();
+    }
+
+    public void deleteDraftNote(long projectId, long mrIid, long draftNoteId) {
+        restClient.delete()
+                .uri("/api/v4/projects/{p}/merge_requests/{m}/draft_notes/{d}", projectId, mrIid, draftNoteId)
+                .retrieve()
+                .toBodilessEntity();
+    }
+
+    /**
+     * Publishes every pending draft note on this MR at once — the API equivalent of clicking
+     * GitLab's "Submit review" button. Comments appear on the MR atomically as a single review,
+     * rather than trickling in one at a time as each is created.
+     */
+    public void bulkPublishDraftNotes(long projectId, long mrIid) {
+        restClient.post()
+                .uri("/api/v4/projects/{p}/merge_requests/{m}/draft_notes/bulk_publish", projectId, mrIid)
+                .retrieve()
+                .toBodilessEntity();
+    }
+
+    // ─── Reviewer assignment / approval ──────────────────────────────────────
+
+    /**
+     * Adds {@code userId} to the MR's reviewers, preserving any reviewers already assigned
+     * (GitLab's reviewer_ids PUT is a full replace, not additive — so any existing human
+     * reviewers are fetched first and kept). No-op if the bot is already a reviewer.
+     */
+    public void addReviewer(long projectId, long mrIid, long userId) {
+        MrReviewers current = restClient.get()
+                .uri("/api/v4/projects/{p}/merge_requests/{m}", projectId, mrIid)
+                .retrieve()
+                .body(MrReviewers.class);
+        List<Long> existingIds = current != null && current.reviewers() != null
+                ? current.reviewers().stream().map(MrReviewers.Reviewer::id).toList()
+                : List.of();
+        if (existingIds.contains(userId)) {
+            return;
+        }
+        List<Long> updated = new ArrayList<>(existingIds);
+        updated.add(userId);
+        restClient.put()
+                .uri("/api/v4/projects/{p}/merge_requests/{m}", projectId, mrIid)
+                .body(Map.of("reviewer_ids", updated))
+                .retrieve()
+                .toBodilessEntity();
+    }
+
+    /**
+     * Approves the MR as the authenticated (bot) user. Merging remains a human decision —
+     * this only records that the bot's review found nothing worth blocking on.
+     */
+    public void approve(long projectId, long mrIid) {
+        restClient.post()
+                .uri("/api/v4/projects/{p}/merge_requests/{m}/approve", projectId, mrIid)
+                .retrieve()
+                .toBodilessEntity();
+    }
+
+    /**
+     * Withdraws the bot's own prior approval. Called when a re-review (new commits) now
+     * finds issues that an earlier, cleaner pass didn't — an approval must reflect the
+     * latest review, not a stale one. No-op (GitLab 404s) if the bot never approved.
+     */
+    public void unapprove(long projectId, long mrIid) {
+        try {
+            restClient.post()
+                    .uri("/api/v4/projects/{p}/merge_requests/{m}/unapprove", projectId, mrIid)
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (HttpClientErrorException.NotFound e) {
+            // Bot had not approved — nothing to withdraw.
+        }
+    }
+
     // ─── Response types ───────────────────────────────────────────────────────
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -198,6 +330,18 @@ public class GitLabApiClient {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record GitLabNote(long id, String body) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record CurrentUser(long id, String username) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record DraftNote(long id) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record MrReviewers(List<Reviewer> reviewers) {
+        @JsonIgnoreProperties(ignoreUnknown = true)
+        private record Reviewer(long id) {}
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record SearchHit(
