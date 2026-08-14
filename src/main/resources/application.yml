@@ -54,6 +54,10 @@ spring:
 gitlab:
   url:            ${GITLAB_URL:https://gitlab.example.com}
   token:          ${GITLAB_TOKEN:placeholder}
+  # Dedicated bot account token — used for every GitLab write (comments, reviewer
+  # assignment, approvals), so they're correctly attributed to the bot, not an admin
+  # account. Falls back to `token` above when unset.
+  bot-token:      ${GITLAB_BOT_TOKEN:}
   webhook-secret: ${GITLAB_WEBHOOK_SECRET:placeholder}
 
 # ── Reviewer tuning ───────────────────────────────────────────────────────────
