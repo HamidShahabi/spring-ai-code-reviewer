@@ -21,7 +21,7 @@ public class GitLabClientConfig {
 
     /**
      * RestClient pre-wired with the GitLab base URL and auth header.
-     * All GitLabApiClient calls use this bean; no other code constructs HTTP clients.
+     * All GitLabClient calls use this bean; no other code constructs HTTP clients.
      *
      * <p>Authenticates as the bot's own identity ({@code gitlab.bot-token}), so every
      * comment, reviewer assignment, and approval is correctly attributed to the reviewer

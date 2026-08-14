@@ -1,7 +1,7 @@
 package com.example.aireviewer.tools;
 
 import com.example.aireviewer.domain.MrContext;
-import com.example.aireviewer.infrastructure.GitLabApiClient;
+import com.example.aireviewer.infrastructure.GitLabClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -37,14 +37,14 @@ public class RepoContextTools {
 
     private static final Logger log = LoggerFactory.getLogger(RepoContextTools.class);
 
-    private final GitLabApiClient gitlab;
+    private final GitLabClient gitlab;
     private final long projectId;
     private final String ref;                 // pinned headCommitSha
     private final int maxLines;
     private final AtomicInteger budget;
     private final Map<String, String> fileCache = new ConcurrentHashMap<>();
 
-    public RepoContextTools(GitLabApiClient gitlab, MrContext ctx, int callBudget, int maxLines) {
+    public RepoContextTools(GitLabClient gitlab, MrContext ctx, int callBudget, int maxLines) {
         this.gitlab    = gitlab;
         this.projectId = ctx.projectId();
         this.ref       = ctx.headCommitSha();

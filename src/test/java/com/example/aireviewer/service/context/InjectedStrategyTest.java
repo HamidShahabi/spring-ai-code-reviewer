@@ -2,7 +2,7 @@ package com.example.aireviewer.service.context;
 
 import com.example.aireviewer.domain.FileChunk;
 import com.example.aireviewer.domain.MrContext;
-import com.example.aireviewer.infrastructure.GitLabApiClient;
+import com.example.aireviewer.infrastructure.GitLabClient;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -25,7 +25,7 @@ class InjectedStrategyTest {
 
     @Test
     void injectsFullFileAtHeadSha_andCaches() {
-        GitLabApiClient gitlab = mock(GitLabApiClient.class);
+        GitLabClient gitlab = mock(GitLabClient.class);
         when(gitlab.fetchFileAtRef(eq(2L), eq("src/Foo.java"), eq(HEAD))).thenReturn("class Foo { int x; }");
         InjectedStrategy s = new InjectedStrategy(gitlab, ctx(), 400);
 
@@ -41,7 +41,7 @@ class InjectedStrategyTest {
 
     @Test
     void returnsEmpty_whenFileMissingAtRef() {
-        GitLabApiClient gitlab = mock(GitLabApiClient.class);
+        GitLabClient gitlab = mock(GitLabClient.class);
         when(gitlab.fetchFileAtRef(anyLong(), anyString(), anyString())).thenReturn(null);
         InjectedStrategy s = new InjectedStrategy(gitlab, ctx(), 400);
 
@@ -50,7 +50,7 @@ class InjectedStrategyTest {
 
     @Test
     void truncatesLongFiles() {
-        GitLabApiClient gitlab = mock(GitLabApiClient.class);
+        GitLabClient gitlab = mock(GitLabClient.class);
         when(gitlab.fetchFileAtRef(anyLong(), anyString(), anyString())).thenReturn("x\n".repeat(1000));
         InjectedStrategy s = new InjectedStrategy(gitlab, ctx(), 50);
 

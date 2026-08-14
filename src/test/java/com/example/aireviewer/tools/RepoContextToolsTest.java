@@ -1,7 +1,7 @@
 package com.example.aireviewer.tools;
 
 import com.example.aireviewer.domain.MrContext;
-import com.example.aireviewer.infrastructure.GitLabApiClient;
+import com.example.aireviewer.infrastructure.GitLabClient;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -19,7 +19,7 @@ class RepoContextToolsTest {
 
     @Test
     void getFile_resolvesAtPinnedHeadSha_andCachesRepeatCalls() {
-        GitLabApiClient gitlab = mock(GitLabApiClient.class);
+        GitLabClient gitlab = mock(GitLabClient.class);
         when(gitlab.fetchFileAtRef(eq(2L), eq("src/Foo.java"), eq(HEAD))).thenReturn("class Foo {}");
         RepoContextTools tools = new RepoContextTools(gitlab, ctx(), 6, 400);
 
@@ -32,7 +32,7 @@ class RepoContextToolsTest {
 
     @Test
     void getFile_rejectsTraversalAndAbsolutePaths_withoutCallingApi() {
-        GitLabApiClient gitlab = mock(GitLabApiClient.class);
+        GitLabClient gitlab = mock(GitLabClient.class);
         RepoContextTools tools = new RepoContextTools(gitlab, ctx(), 6, 400);
 
         assertThat(tools.getFile("../etc/passwd")).contains("Invalid path");
@@ -42,7 +42,7 @@ class RepoContextToolsTest {
 
     @Test
     void getFile_returnsNotFoundMessage_whenMissingAtRef() {
-        GitLabApiClient gitlab = mock(GitLabApiClient.class);
+        GitLabClient gitlab = mock(GitLabClient.class);
         when(gitlab.fetchFileAtRef(anyLong(), any(), any())).thenReturn(null);
         RepoContextTools tools = new RepoContextTools(gitlab, ctx(), 6, 400);
 
@@ -51,7 +51,7 @@ class RepoContextToolsTest {
 
     @Test
     void budget_isSharedAndExhausts() {
-        GitLabApiClient gitlab = mock(GitLabApiClient.class);
+        GitLabClient gitlab = mock(GitLabClient.class);
         when(gitlab.fetchFileAtRef(anyLong(), any(), any())).thenAnswer(i -> "content of " + i.getArgument(1));
         RepoContextTools tools = new RepoContextTools(gitlab, ctx(), 2, 400);
 
@@ -63,7 +63,7 @@ class RepoContextToolsTest {
 
     @Test
     void getFile_truncatesLongFiles() {
-        GitLabApiClient gitlab = mock(GitLabApiClient.class);
+        GitLabClient gitlab = mock(GitLabClient.class);
         String big = "line\n".repeat(1000);
         when(gitlab.fetchFileAtRef(anyLong(), any(), any())).thenReturn(big);
         RepoContextTools tools = new RepoContextTools(gitlab, ctx(), 6, 50);
