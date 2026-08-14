@@ -2,7 +2,7 @@ package com.example.aireviewer.service;
 
 import com.example.aireviewer.domain.*;
 import com.example.aireviewer.infrastructure.CommentPublisher;
-import com.example.aireviewer.infrastructure.GitLabApiClient;
+import com.example.aireviewer.infrastructure.GitLabClient;
 import com.example.aireviewer.repository.ReviewRepository;
 import com.example.aireviewer.service.context.ContextStrategy;
 import com.example.aireviewer.service.context.ContextStrategyFactory;
@@ -37,7 +37,7 @@ public class ReviewOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(ReviewOrchestrator.class);
 
-    private final GitLabApiClient  gitLabApiClient;
+    private final GitLabClient     gitLabApiClient;
     private final DiffChunker      diffChunker;
     private final LlmReviewService llmReviewService;
     private final RulesEngine      rulesEngine;
@@ -50,7 +50,7 @@ public class ReviewOrchestrator {
     private final String modelName;
 
     public ReviewOrchestrator(
-            GitLabApiClient gitLabApiClient,
+            GitLabClient gitLabApiClient,
             DiffChunker diffChunker,
             LlmReviewService llmReviewService,
             RulesEngine rulesEngine,
@@ -85,9 +85,9 @@ public class ReviewOrchestrator {
             assignSelfAsReviewer(projectId, mrIid);
 
             // ── 1. Fetch diff and commit SHAs ─────────────────────────────
-            List<GitLabApiClient.DiffFile> diffFiles =
+            List<GitLabClient.DiffFile> diffFiles =
                     gitLabApiClient.fetchDiff(projectId, mrIid);
-            GitLabApiClient.MrVersion version =
+            GitLabClient.MrVersion version =
                     gitLabApiClient.fetchLatestVersion(projectId, mrIid);
 
             MrContext ctx = new MrContext(

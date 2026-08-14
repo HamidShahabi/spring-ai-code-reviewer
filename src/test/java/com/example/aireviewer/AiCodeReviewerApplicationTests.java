@@ -1,6 +1,6 @@
 package com.example.aireviewer;
 
-import com.example.aireviewer.service.DiffChunker;
+import com.example.aireviewer.service.RegexDiffChunker;
 import com.example.aireviewer.config.ReviewerProperties;
 import org.junit.jupiter.api.Test;
 
@@ -19,7 +19,7 @@ class AiCodeReviewerApplicationTests {
     @Test
     void diffChunker_parsesValidLinesFromHunkHeaders() {
         ReviewerProperties props = new ReviewerProperties();
-        DiffChunker chunker = new DiffChunker(props);
+        RegexDiffChunker chunker = new RegexDiffChunker(props);
 
         String diff = """
                 @@ -10,4 +10,6 @@ public class Foo {
@@ -43,7 +43,7 @@ class AiCodeReviewerApplicationTests {
     @Test
     void diffChunker_returnsEmptyForNoDiffHunks() {
         ReviewerProperties props = new ReviewerProperties();
-        DiffChunker chunker = new DiffChunker(props);
+        RegexDiffChunker chunker = new RegexDiffChunker(props);
 
         List<Integer> lines = chunker.parseValidLines("no hunk headers here");
         assertTrue(lines.isEmpty());

@@ -2,7 +2,7 @@ package com.example.aireviewer.service.context;
 
 import com.example.aireviewer.domain.FileChunk;
 import com.example.aireviewer.domain.MrContext;
-import com.example.aireviewer.infrastructure.GitLabApiClient;
+import com.example.aireviewer.infrastructure.GitLabClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -22,13 +22,13 @@ public class InjectedStrategy implements ContextStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(InjectedStrategy.class);
 
-    private final GitLabApiClient gitlab;
+    private final GitLabClient gitlab;
     private final long projectId;
     private final String ref;
     private final int maxLines;
     private final Map<String, String> cache = new ConcurrentHashMap<>();
 
-    public InjectedStrategy(GitLabApiClient gitlab, MrContext ctx, int maxLines) {
+    public InjectedStrategy(GitLabClient gitlab, MrContext ctx, int maxLines) {
         this.gitlab    = gitlab;
         this.projectId = ctx.projectId();
         this.ref       = ctx.headCommitSha();
